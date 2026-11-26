@@ -130,7 +130,7 @@ let saveTimer: number | undefined;
 let saveInProgress: Promise<void> | undefined;
 let autoSyncTimer: number | undefined;
 let toastTimer: number | undefined;
-let syncing = false;
+let syncingProject: string | undefined;
 let applying = false;
 let building = false;
 let switching = false;
@@ -211,6 +211,7 @@ function setStatus(id: string, symbol: Icon | null, text: string, tone = "") {
 }
 
 function renderStatus() {
+  const syncing = !!syncingProject && syncingProject === workspace.project?.id;
   setStatus("save-status", saveError ? "circleAlert" : savePending ? "refresh" : "check",
     !workspace.project ? "" : saveError ? "Save failed" : savePending ? "Saving…" : "Saved locally",
     saveError ? "error" : savePending ? "working" : "good");
@@ -230,7 +231,7 @@ function renderStatus() {
   const connected = !!workspace.project?.connection;
   const label = connected ? syncing ? "Syncing…" : "Sync Overleaf" : "Connect Overleaf";
   if (cloud.textContent !== label) cloud.innerHTML = icon(connected ? "refresh" : "cloud") + `<span>${label}</span>`;
-  cloud.disabled = syncing || switching;
+  cloud.disabled = (connected && !!syncingProject) || switching;
   cloud.classList.toggle("working", syncing);
 }
 
@@ -380,7 +381,7 @@ async function flush() {
     source = { version: nextVersion, text };
     savePending = view?.state.sliceDoc() !== text;
     saveError = "";
-    if (project.connection && !syncing && !syncError) syncMessage = "Changes to sync";
+    if (project.connection && !syncingProject && !syncError) syncMessage = "Changes to sync";
     queueSync();
   }).catch(error => {
     saveError = message(error);
@@ -507,7 +508,7 @@ async function showPdf(bytes?: Uint8Array) {
 }
 
 async function changeProject(action: () => Promise<Workspace | null>) {
-  if (switching || switchingFile || syncing || building) {
+  if (switching || switchingFile || applying || building) {
     throw new Error("Wait for the current project operation to finish.");
   }
   switching = true;
@@ -537,15 +538,16 @@ function queueSync(delay = 4200) {
 
 async function sync(manual: boolean) {
   const project = workspace.project;
-  if (!project?.connection || syncing || switching || switchingFile || building || (!manual && dialog.open)) return;
+  if (!project?.connection || syncingProject || switching || switchingFile || building || (!manual && dialog.open)) return;
   clearTimeout(autoSyncTimer);
-  syncing = true;
+  syncingProject = project.id;
   syncError = false;
   syncMessage = "Syncing with Overleaf…";
   renderStatus();
   try {
     await api.fetch(project.id);
-    if (building || switchingFile || dialogBusy) {
+    if (workspace.project?.id !== project.id) return;
+    if (building || switching || switchingFile || dialogBusy) {
       syncMessage = "Overleaf connected";
       queueSync();
       return;
@@ -583,15 +585,18 @@ async function sync(manual: boolean) {
       return;
     }
     if (integrated.needsPush) await api.push(project.id);
+    if (workspace.project?.id !== project.id) return;
     const hasNewEdits = stagedRevision !== editCount || savePending;
     syncMessage = hasNewEdits ? "Changes to sync" : "Synced with Overleaf";
     if (hasNewEdits) queueSync();
   } catch (error) {
+    if (workspace.project?.id !== project.id) return;
     syncError = true;
     syncMessage = message(error);
     if (manual) notify(syncMessage, true);
   } finally {
-    syncing = false;
+    syncingProject = undefined;
+    if (workspace.project?.id !== project.id) queueSync();
     renderStatus();
   }
 }

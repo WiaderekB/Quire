@@ -7,6 +7,7 @@ const pdfAssets = fileURLToPath(new URL("./node_modules/pdfjs-dist/", import.met
 
 export default defineConfig({
   base: "./",
+  build: { license: { fileName: "THIRD-PARTY-LICENSES.md" } },
   plugins: [{
     name: "pdf-assets",
     async writeBundle({ dir }) {

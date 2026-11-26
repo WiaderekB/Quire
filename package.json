@@ -14,6 +14,7 @@
   "scripts": {
     "build": "tsc --noEmit && vite build",
     "start": "pnpm build && electron .",
+    "test": "node --test",
     "package": "pnpm build && electron-builder --publish never"
   },
   "devDependencies": {
@@ -48,7 +49,7 @@
       "category": "Office",
       "executableName": "quire",
       "icon": "assets/icon.png",
-      "target": ["AppImage", "deb"]
+      "target": ["AppImage", "tar.gz"]
     }
   }
 }
