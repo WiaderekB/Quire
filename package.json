@@ -1,6 +1,6 @@
 {
   "name": "quire",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "A quiet, offline-first LaTeX editor for macOS and Linux.",
   "author": {
@@ -10,9 +10,11 @@
   "type": "module",
   "main": "desktop/main.mjs",
   "packageManager": "pnpm@11.25.0",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && vite build --config vite.mcp.config.mjs",
     "start": "pnpm build && electron .",
     "test": "node --test",
     "package": "pnpm build && electron-builder --publish never"
@@ -27,33 +29,69 @@
     "@codemirror/view": "^6.39.0",
     "@fontsource/ibm-plex-mono": "^5.2.0",
     "@lezer/highlight": "^1.2.0",
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/server": "^2.4.0",
     "electron": "^45.5.0",
     "electron-builder": "^26.18.0",
     "lucide": "npm:lucide-static@^1.0.0",
     "pdfjs-dist": "^6.5.438",
     "typescript": "^6.0.0",
-    "vite": "^8.4.0"
+    "vite": "^8.4.0",
+    "zod": "^4.6.7"
   },
   "build": {
     "appId": "com.quire.editor",
     "productName": "Quire",
-    "directories": { "output": "release", "buildResources": "assets" },
-    "files": ["dist/**/*", "desktop/**/*", "example/**/*", "package.json"],
-    "electronLanguages": ["en"],
+    "directories": {
+      "output": "release",
+      "buildResources": "assets"
+    },
+    "files": [
+      "dist/**/*",
+      "!dist/mcp",
+      "!dist/mcp/**/*",
+      "desktop/**/*",
+      "!desktop/mcp.mjs",
+      "example/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "dist/mcp", "to": "mcp" }
+    ],
+    "electronLanguages": [
+      "en"
+    ],
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "assets/icon.png",
-      "target": [{ "target": "dmg", "arch": "universal" }]
+      "target": [
+        {
+          "target": "dmg",
+          "arch": "universal"
+        }
+      ]
     },
     "dmg": {
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
       "background": "assets/dmg-background.png",
-      "window": { "width": 560, "height": 360 },
+      "window": {
+        "width": 560,
+        "height": 360
+      },
       "iconSize": 92,
       "title": "Quire ${version}",
       "contents": [
-        { "x": 143, "y": 211, "type": "file" },
-        { "x": 417, "y": 211, "type": "link", "path": "/Applications" }
+        {
+          "x": 143,
+          "y": 211,
+          "type": "file"
+        },
+        {
+          "x": 417,
+          "y": 211,
+          "type": "link",
+          "path": "/Applications"
+        }
       ]
     },
     "linux": {
@@ -61,7 +99,10 @@
       "executableName": "quire",
       "icon": "assets/icon.png",
       "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
-      "target": ["AppImage", "tar.gz"]
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ]
     }
   }
 }
