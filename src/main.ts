@@ -4,7 +4,7 @@ import "./style.css";
 import { openSearchPanel } from "@codemirror/search";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
 import { api } from "./api";
-import type { Engine, ProjectFile, Source, Workspace } from "./api";
+import type { Appearance, Engine, Preferences, ProjectFile, Source, Workspace } from "./api";
 import { createEditor, getHeadings, revealLine, setReadOnly } from "./editor";
 import { icon, iconButton } from "./icons";
 import type { Icon } from "./icons";
@@ -12,30 +12,35 @@ import { Preview } from "./preview";
 
 const mac = api.platform === "darwin";
 const shortcut = mac ? "⌘↵" : "Ctrl+↵";
+const settingsShortcut = mac ? "⌘," : "Ctrl+,";
 const app = document.querySelector<HTMLElement>("#app")!;
 app.classList.toggle("mac", mac);
 app.innerHTML = `
   <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark" aria-hidden="true">${icon("bookOpen")}</span>
-      <span>Quire</span>
+    <div class="top-leading">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">${icon("layers")}</span>
+        <span>Quire</span>
+      </div>
+      <span class="toolbar-divider"></span>
+      <div class="project-picker">
+        <button id="project-menu" class="project-button" aria-expanded="false" aria-controls="project-popover">
+          <span id="project-name">Projects</span>${icon("chevronDown")}
+        </button>
+        <div id="project-popover" class="popover" hidden></div>
+      </div>
     </div>
-    <div class="project-picker">
-      <button id="project-menu" class="project-button" aria-expanded="false" aria-controls="project-popover">
-        <span id="project-name">Projects</span>${icon("chevronDown")}
-      </button>
-      <div id="project-popover" class="popover" hidden></div>
+    <div class="view-switch" role="group" aria-label="Workspace view">
+      <button data-view="editor" title="Source only" aria-label="Source only" aria-pressed="false">${icon("fileCode")}<span>Source</span></button>
+      <button data-view="split" title="Source and preview" aria-label="Source and preview" aria-pressed="true">${icon("columns2")}<span>Split</span></button>
+      <button data-view="preview" title="Preview only" aria-label="Preview only" aria-pressed="false">${icon("fileText")}<span>PDF</span></button>
     </div>
     <div class="top-actions">
       <button id="cloud-button" class="cloud-button">${icon("cloud")}<span>Connect Overleaf</span></button>
-      <div class="toolbar-divider"></div>
-      <button class="icon-button sidebar-toggle" id="toggle-sidebar" title="Toggle sidebar" aria-label="Toggle sidebar" aria-pressed="true">${icon("panelLeft")}</button>
-      <div class="view-switch" role="group" aria-label="Workspace view">
-        <button data-view="editor" title="Source only" aria-label="Source only" aria-pressed="false">${icon("fileCode")}</button>
-        <button data-view="split" title="Source and preview" aria-label="Source and preview" aria-pressed="true">${icon("columns2")}</button>
-        <button data-view="preview" title="Preview only" aria-label="Preview only" aria-pressed="false">${icon("fileText")}</button>
+      <div class="compile-group">
+        <button id="build" class="compile-button" title="Compile (${shortcut})">${icon("play")}<span>Compile</span></button>
+        <button id="build-settings" class="compile-options" title="Compiler settings" aria-label="Compiler settings">${icon("chevronDown")}</button>
       </div>
-      <button id="build" class="compile-button" title="Compile (${shortcut})">${icon("play")}<span>Compile</span><kbd>${shortcut}</kbd></button>
     </div>
   </header>
   <main class="workspace" data-view="split">
@@ -50,21 +55,26 @@ app.innerHTML = `
         <div class="sidebar-heading"><h2>Outline</h2></div>
         <nav id="outline" aria-label="Document outline"></nav>
       </section>
-      <button id="reveal-project" class="reveal-project">${icon("folderOpen")}<span>Show project folder</span>${icon("externalLink")}</button>
+      <button id="settings" class="settings-button" title="Settings (${settingsShortcut})">${icon("gear")}<span>Settings</span></button>
     </aside>
+    <div class="document-panes">
     <section class="source-pane" aria-label="Source editor">
       <div class="pane-bar source-bar">
-        <div class="file-tab" id="file-tab" hidden>
-          ${icon("fileCode")}<span id="filename"></span><i id="dirty-dot" title="Unsaved changes" hidden></i>
+        <div class="pane-leading">
+          <div class="file-title" id="file-title" hidden>
+            <span id="file-kind"></span><span id="file-directory" hidden></span><span id="filename"></span><i id="dirty-dot" title="Unsaved changes" hidden></i>
+          </div>
         </div>
-        <button id="build-settings" class="icon-button" title="Compiler settings" aria-label="Compiler settings">${icon("settings")}</button>
+        <button id="find-button" class="icon-button" title="Find in file" aria-label="Find in file">${icon("search")}</button>
       </div>
       <div id="editor" class="editor"></div>
       <div id="editor-empty" class="empty-state" hidden></div>
     </section>
+    <div id="pane-divider" class="pane-divider" role="separator" tabindex="0" aria-orientation="vertical"
+      aria-label="Resize source and preview" aria-valuemin="34" aria-valuemax="66" aria-valuenow="52" hidden></div>
     <section class="preview-pane" aria-label="PDF preview">
       <div class="pane-bar preview-bar">
-        <div class="pane-title">${icon("fileText")}<span>PDF Preview</span></div>
+        <div class="pane-title"><span>Preview</span><span id="page-count" class="page-count" hidden></span></div>
         <div class="preview-tools" id="preview-tools">
           <button class="icon-button" id="zoom-out" title="Zoom out" aria-label="Zoom out">${icon("minus")}</button>
           <button id="fit" class="zoom-label" title="Fit page" aria-label="Fit page">Fit</button>
@@ -88,13 +98,17 @@ app.innerHTML = `
         <pre id="log-text"></pre>
       </section>
     </section>
+    </div>
   </main>
   <footer class="statusbar">
-    <div class="status-slot"><span id="save-status" role="status"></span><span id="sync-status" role="status" hidden></span></div>
+    <div class="status-slot">
+      <button class="icon-button sidebar-toggle" id="toggle-sidebar" title="Toggle sidebar" aria-label="Toggle sidebar" aria-pressed="true">${icon("panelLeft")}</button>
+      <button id="settings-collapsed" class="icon-button" title="Settings (${settingsShortcut})" aria-label="Settings" hidden>${icon("gear")}</button>
+      <span id="save-status" role="status"></span><span id="sync-status" role="status" hidden></span>
+    </div>
     <div class="status-slot status-details">
       <span id="cursor" class="cursor"></span>
       <button id="build-status" class="status-button" title="Show build log"></button>
-      <span id="page-count" class="page-count"></span>
     </div>
   </footer>
   <div id="toast" class="toast" role="status" hidden></div>
@@ -115,6 +129,8 @@ app.innerHTML = `
 
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id)! as T;
 const main = app.querySelector<HTMLElement>("main")!;
+const panes = app.querySelector<HTMLElement>(".document-panes")!;
+const divider = el("pane-divider");
 const editorHost = el("editor");
 const dialog = el<HTMLDialogElement>("dialog");
 const form = el<HTMLFormElement>("dialog-form");
@@ -146,9 +162,14 @@ let savePending = false;
 let editCount = 0;
 let dialogAction: ((data: FormData) => Promise<void>) | undefined;
 let dialogBusy = false;
+let preferences: Preferences = { appearance: "system", editorSize: 14 };
+let split = 52;
 
 const preview = new Preview(el("preview-scroll"), el("paper-stack"), (page, pages, zoom) => {
-  el("page-count").textContent = pages ? `${page} / ${pages}` : "";
+  const count = el("page-count");
+  count.hidden = !pages;
+  count.textContent = pages ? `${page} / ${pages}` : "";
+  count.title = pages ? `Page ${page} of ${pages}` : "";
   el("fit").textContent = zoom;
   for (const id of ["zoom-out", "fit", "zoom-in", "export"]) el<HTMLButtonElement>(id).disabled = !pages;
 });
@@ -184,6 +205,7 @@ function run(action: () => void | Promise<unknown>) {
 function showView(mode: string) {
   if (!["editor", "split", "preview"].includes(mode)) mode = "split";
   main.dataset.view = mode;
+  divider.hidden = mode !== "split";
   localStorage.setItem("view", mode);
   for (const button of viewButtons) button.setAttribute("aria-pressed", String(button.dataset.view === mode));
   if (mode !== "preview") view?.requestMeasure();
@@ -191,8 +213,17 @@ function showView(mode: string) {
 
 function showSidebar(show: boolean) {
   main.classList.toggle("sidebar-hidden", !show);
+  el("settings-collapsed").hidden = show;
   el("toggle-sidebar").setAttribute("aria-pressed", String(show));
   localStorage.setItem("sidebar", show ? "open" : "closed");
+}
+
+function resizeSplit(value: number, persist = true) {
+  split = Math.max(34, Math.min(66, Math.round(value)));
+  panes.style.setProperty("--source-share", `${split}%`);
+  divider.setAttribute("aria-valuenow", String(split));
+  divider.setAttribute("aria-valuetext", `Source ${split} percent`);
+  if (persist) localStorage.setItem("source-share", String(split));
 }
 
 function setStatus(id: string, symbol: Icon | null, text: string, tone = "") {
@@ -226,11 +257,16 @@ function renderStatus() {
   el<HTMLButtonElement>("build").disabled = !workspace.project?.main || building || applying;
   el<HTMLButtonElement>("new-file").disabled = !workspace.project || applying || switching || switchingFile;
   el<HTMLButtonElement>("build-settings").disabled = !workspace.project || !workspace.files.some(file => /\.tex$/i.test(file.path));
-  el<HTMLButtonElement>("reveal-project").hidden = !workspace.project;
+  el<HTMLButtonElement>("find-button").disabled = !view;
   const cloud = el<HTMLButtonElement>("cloud-button");
   const connected = !!workspace.project?.connection;
   const label = connected ? syncing ? "Syncing…" : "Sync Overleaf" : "Connect Overleaf";
-  if (cloud.textContent !== label) cloud.innerHTML = icon(connected ? "refresh" : "cloud") + `<span>${label}</span>`;
+  if (cloud.dataset.label !== label) {
+    cloud.dataset.label = label;
+    cloud.title = label;
+    cloud.setAttribute("aria-label", label);
+    cloud.innerHTML = icon(connected ? "refresh" : "cloud") + `<span>${label}</span>`;
+  }
   cloud.disabled = (connected && !!syncingProject) || switching;
   cloud.classList.toggle("working", syncing);
 }
@@ -324,10 +360,10 @@ function renderOutline() {
     button.dataset.line = String(heading.line);
     button.className = "outline-row";
     button.style.paddingLeft = `${9 + heading.level * 13}px`;
-    const marker = document.createElement("span");
-    marker.setAttribute("aria-hidden", "true");
-    marker.textContent = "§";
-    button.append(marker, document.createTextNode(heading.title));
+    const title = document.createElement("span");
+    title.textContent = heading.title;
+    button.innerHTML = icon("list");
+    button.append(title);
     button.addEventListener("click", () => { if (view) revealLine(view, heading.line); });
     outline.append(button);
   }
@@ -437,7 +473,11 @@ async function openFile(file?: ProjectFile, { reload = false, focus = true } = {
     view = undefined;
     source = loaded;
     activeFile = file;
-    el("file-tab").hidden = !file;
+    el("file-title").hidden = !file;
+    el("file-kind").innerHTML = file ? icon(fileSymbol(file.path)) : "";
+    const directory = file?.path.split("/").slice(0, -1).join(" / ");
+    el("file-directory").textContent = directory ? directory + " /" : "";
+    el("file-directory").hidden = !directory;
     el("filename").textContent = file ? fileName(file.path) : "";
     el("filename").title = file?.path ?? "";
     el("editor-empty").hidden = true;
@@ -448,6 +488,7 @@ async function openFile(file?: ProjectFile, { reload = false, focus = true } = {
       if (loaded) {
         if (focus && main.dataset.view === "preview") showView("split");
         view = createEditor(editorHost, file.path, loaded.text, edited);
+        view.scrollDOM.scrollTop = 0;
         if (focus) view.focus();
       } else {
         editorPlaceholder(fileSymbol(file.path), fileName(file.path), "Open this file with another app from the project folder.",
@@ -661,6 +702,7 @@ function showMenu() {
   item("plus", "New project…", newProject);
   item("folderOpen", "Open folder…", openFolder);
   const project = workspace.project;
+  if (project) item("folder", "Show project folder", () => api.reveal(project.id));
   if (project?.connection) {
     item("settings", "Connection settings…", connectionSettings);
     item("externalLink", "Open on Overleaf", () => api.openOverleaf(project.id));
@@ -726,6 +768,53 @@ function showDialog(options: {
 }
 
 const value = (data: FormData, name: string) => String(data.get(name) ?? "").trim();
+
+function setPreferences(next: Preferences) {
+  preferences = next;
+  editorHost.style.setProperty("--code-size", `${next.editorSize}px`);
+  view?.requestMeasure();
+}
+
+function openSettings() {
+  const appearance = document.createElement("fieldset");
+  appearance.className = "appearance-field";
+  const legend = document.createElement("legend");
+  legend.textContent = "Appearance";
+  const choices = document.createElement("div");
+  choices.className = "appearance-choices";
+  const options: [Appearance, string][] = [["system", "System"], ["light", "Light"], ["dark", "Dark"]];
+  for (const [mode, name] of options) {
+    const choice = document.createElement("label");
+    choice.className = "appearance-choice";
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "appearance";
+    input.value = mode;
+    input.checked = preferences.appearance === mode;
+    const sample = document.createElement("span");
+    sample.className = `theme-sample ${mode}`;
+    sample.setAttribute("aria-hidden", "true");
+    sample.innerHTML = "<i></i><i></i>";
+    choice.append(input, sample, document.createTextNode(name));
+    choices.append(choice);
+  }
+  appearance.append(legend, choices);
+  const sizes: [string, string][] = ["12", "13", "14", "15", "16", "17", "18"].map(size => [size, `${size} px`]);
+  showDialog({
+    title: "Settings", symbol: "gear", label: "Save settings", description: "",
+    fields: [appearance, select("Editor text size", "size", sizes, String(preferences.editorSize))],
+    submit: async data => {
+      setPreferences(await api.savePreferences(value(data, "appearance") as Appearance, Number(value(data, "size"))));
+    },
+  });
+  appearance.querySelector<HTMLInputElement>("input:checked")?.focus();
+}
+
+function findInFile() {
+  if (!view) return;
+  if (main.dataset.view === "preview") showView("split");
+  openSearchPanel(view);
+}
 
 function newProject() {
   showDialog({
@@ -852,7 +941,9 @@ el("toggle-sidebar").addEventListener("click", () => showSidebar(main.classList.
 el("build").addEventListener("click", () => void build());
 el("new-file").addEventListener("click", newFile);
 el("build-settings").addEventListener("click", buildSettings);
-el("reveal-project").addEventListener("click", () => run(() => api.reveal(workspace.project!.id)));
+el("find-button").addEventListener("click", findInFile);
+el("settings").addEventListener("click", openSettings);
+el("settings-collapsed").addEventListener("click", openSettings);
 el("zoom-out").addEventListener("click", () => preview.zoom(-0.1));
 el("zoom-in").addEventListener("click", () => preview.zoom(0.1));
 el("fit").addEventListener("click", () => preview.fit());
@@ -864,6 +955,27 @@ el("build-status").addEventListener("click", () => {
 });
 el("close-log").addEventListener("click", () => { el("build-log").hidden = true; });
 viewButtons.forEach(button => button.addEventListener("click", () => showView(button.dataset.view!)));
+divider.addEventListener("pointerdown", event => {
+  if (event.button !== 0 || !event.isPrimary || divider.hasPointerCapture(event.pointerId)) return;
+  divider.setPointerCapture(event.pointerId);
+  divider.classList.add("dragging");
+});
+divider.addEventListener("pointermove", event => {
+  if (!divider.hasPointerCapture(event.pointerId)) return;
+  const box = panes.getBoundingClientRect();
+  resizeSplit((event.clientX - box.left) / box.width * 100, false);
+});
+divider.addEventListener("lostpointercapture", () => {
+  divider.classList.remove("dragging");
+  resizeSplit(split);
+});
+divider.addEventListener("dblclick", () => resizeSplit(52));
+divider.addEventListener("keydown", event => {
+  const sizes: Record<string, number> = { ArrowLeft: split - 2, ArrowRight: split + 2, Home: 34, End: 66 };
+  if (!Object.hasOwn(sizes, event.key)) return;
+  event.preventDefault();
+  resizeSplit(sizes[event.key]);
+});
 
 api.onPrepareClose(() => {
   setReadOnly(view, true);
@@ -878,12 +990,10 @@ api.onCommand(command => {
   if (command === "new") newProject();
   if (command === "new-file") newFile();
   if (command === "open") run(openFolder);
+  if (command === "settings") openSettings();
   if (command === "save") run(flush);
   if (command === "build") void build();
-  if (command === "find" && view) {
-    if (main.dataset.view === "preview") showView("split");
-    openSearchPanel(view);
-  }
+  if (command === "find") findInFile();
 });
 
 window.setInterval(() => {
@@ -894,5 +1004,10 @@ window.addEventListener("online", () => {
 });
 showSidebar(localStorage.getItem("sidebar") !== "closed");
 showView(localStorage.getItem("view") ?? "split");
+resizeSplit(Number(localStorage.getItem("source-share")) || 52, false);
 renderStatus();
-run(async () => loadWorkspace(await api.start(), true));
+run(async () => {
+  const { preferences, ...workspace } = await api.start();
+  setPreferences(preferences);
+  await loadWorkspace(workspace, true);
+});

@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 const actions = [
   "start", "openFolder", "selectProject", "newProject", "connect", "configureConnection",
   "openOverleaf", "reveal", "refresh", "read", "save", "createFile", "configureBuild",
-  "fetch", "integrate", "push", "build", "exportPdf", "close",
+  "fetch", "integrate", "push", "build", "exportPdf", "savePreferences", "close",
 ];
 const api = Object.fromEntries(actions.map(action => [
   action,

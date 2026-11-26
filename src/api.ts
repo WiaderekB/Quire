@@ -10,13 +10,16 @@ export type Project = {
 export type ProjectFile = { path: string; editable: boolean };
 export type Workspace = { project: Project | null; files: ProjectFile[]; recent: Project[]; preview?: Uint8Array };
 export type Source = { text: string; version: string };
+export type Appearance = "system" | "light" | "dark";
+export type Preferences = { appearance: Appearance; editorSize: number };
 export type BuildResult =
   | { ok: true; bytes: Uint8Array; name: string; log: string }
   | { ok: false; message: string; log: string };
 
 export interface QuireApi {
   platform: string;
-  start(): Promise<Workspace>;
+  start(): Promise<Workspace & { preferences: Preferences }>;
+  savePreferences(appearance: Appearance, editorSize: number): Promise<Preferences>;
   openFolder(): Promise<Workspace | null>;
   selectProject(id: string): Promise<Workspace>;
   newProject(name: string): Promise<Workspace>;

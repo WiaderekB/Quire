@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, safeStorage, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { cp, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -15,6 +15,7 @@ const renderer = path.join(appRoot, "dist");
 const origin = "quire://app";
 const isMac = process.platform === "darwin";
 const engines = ["pdflatex", "xelatex", "lualatex"];
+const appearances = ["system", "light", "dark"];
 let window;
 let state;
 let statePath;
@@ -65,6 +66,18 @@ function publicProject(project) {
 
 function recentProjects() {
   return state.projects.map(publicProject);
+}
+
+function preferences() {
+  const { appearance, editorSize } = state.preferences ?? {};
+  return {
+    appearance: appearances.includes(appearance) ? appearance : "system",
+    editorSize: Number.isInteger(editorSize) && editorSize >= 12 && editorSize <= 18 ? editorSize : 14,
+  };
+}
+
+function windowBackground() {
+  return nativeTheme.shouldUseDarkColors ? "#1d201e" : "#fafaf7";
 }
 
 function validateName(value) {
@@ -176,6 +189,7 @@ const actions = {
     const project = getProject(state.active);
     try {
       const workspace = await activate(project);
+      workspace.preferences = preferences();
       if (project.id === "field-notes" && project.main === "main.tex") {
         const files = await listFiles(project.root);
         const unchanged = files.length === 3 && (await Promise.all(files.map(async file =>
@@ -190,10 +204,25 @@ const actions = {
       return workspace;
     } catch (error) {
       if (["ENOENT", "EACCES"].includes(error.code)) {
-        return { project: null, files: [], recent: recentProjects() };
+        return { project: null, files: [], recent: recentProjects(), preferences: preferences() };
       }
       throw error;
     }
+  },
+  async savePreferences(appearance, editorSize) {
+    if (!appearances.includes(appearance) || !Number.isInteger(editorSize) || editorSize < 12 || editorSize > 18) {
+      throw new Error("Choose a valid appearance and text size.");
+    }
+    const previous = state.preferences;
+    state.preferences = { appearance, editorSize };
+    try {
+      await saveState();
+    } catch (error) {
+      state.preferences = previous;
+      throw error;
+    }
+    nativeTheme.themeSource = appearance;
+    return preferences();
   },
   async openFolder() {
     const result = await dialog.showOpenDialog(window, { title: "Open a LaTeX project", properties: ["openDirectory"] });
@@ -342,7 +371,15 @@ function configureMenu() {
     return { label, accelerator, click: () => window?.webContents.send("quire:command", name) };
   }
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    ...(isMac ? [{ role: "appMenu" }] : []),
+    ...(isMac ? [{ label: "Quire", submenu: [
+      { role: "about" },
+      command("Settings…", "CmdOrCtrl+,", "settings"),
+      { type: "separator" },
+      { role: "services" },
+      { type: "separator" },
+      { role: "hide" }, { role: "hideOthers" }, { role: "unhide" },
+      { type: "separator" }, { role: "quit" },
+    ] }] : []),
     { label: "File", submenu: [
       command("New Project…", "CmdOrCtrl+Shift+N", "new"),
       command("Open Folder…", "CmdOrCtrl+O", "open"),
@@ -351,6 +388,7 @@ function configureMenu() {
       command("Save", "CmdOrCtrl+S", "save"),
       command("Build", "CmdOrCtrl+Enter", "build"),
       command("Find in File…", "CmdOrCtrl+F", "find"),
+      ...(isMac ? [] : [command("Settings…", "CmdOrCtrl+,", "settings")]),
       { type: "separator" }, { role: "close" },
     ] },
     { role: "editMenu" },
@@ -367,9 +405,9 @@ function createWindow() {
     height: 920,
     minWidth: 820,
     minHeight: 560,
-    backgroundColor: "#f9f8f5",
+    backgroundColor: windowBackground(),
     titleBarStyle: isMac ? "hiddenInset" : "default",
-    ...(isMac ? { trafficLightPosition: { x: 17, y: 23 } } : {}),
+    ...(isMac ? { trafficLightPosition: { x: 18, y: 23 } } : {}),
     webPreferences: {
       preload: path.join(appRoot, "desktop", "preload.cjs"),
       sandbox: true,
@@ -404,6 +442,8 @@ else {
       return net.fetch(pathToFileURL(asset).href);
     });
     await initialize();
+    nativeTheme.themeSource = preferences().appearance;
+    nativeTheme.on("updated", () => window?.setBackgroundColor(windowBackground()));
     if (isMac && !app.isPackaged) app.dock.setIcon(path.join(appRoot, "assets", "icon.png"));
     for (const [action, handler] of Object.entries(actions)) {
       ipcMain.handle(`quire:${action}`, async (event, ...args) => {
