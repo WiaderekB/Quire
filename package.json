@@ -1,6 +1,6 @@
 {
   "name": "quire",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A quiet, offline-first LaTeX editor for macOS and Linux.",
   "author": {
@@ -43,12 +43,24 @@
     "mac": {
       "category": "public.app-category.productivity",
       "icon": "assets/icon.png",
-      "target": "dmg"
+      "target": [{ "target": "dmg", "arch": "universal" }]
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "background": "assets/dmg-background.png",
+      "window": { "width": 560, "height": 360 },
+      "iconSize": 92,
+      "title": "Quire ${version}",
+      "contents": [
+        { "x": 143, "y": 211, "type": "file" },
+        { "x": 417, "y": 211, "type": "link", "path": "/Applications" }
+      ]
     },
     "linux": {
       "category": "Office",
       "executableName": "quire",
       "icon": "assets/icon.png",
+      "artifactName": "${productName}-${version}-linux-${arch}.${ext}",
       "target": ["AppImage", "tar.gz"]
     }
   }
