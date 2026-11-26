@@ -1,3 +1,5 @@
+import type { TemplateId } from "../desktop/templates.mjs";
+
 export type Engine = "pdflatex" | "xelatex" | "lualatex";
 export type Project = {
   id: string;
@@ -11,7 +13,14 @@ export type ProjectFile = { path: string; editable: boolean };
 export type Workspace = { project: Project | null; files: ProjectFile[]; recent: Project[]; preview?: Uint8Array };
 export type Source = { text: string; version: string };
 export type Appearance = "system" | "light" | "dark";
-export type Preferences = { appearance: Appearance; editorSize: number };
+export type Preferences = {
+  appearance: Appearance;
+  editorSize: number;
+  tabSize: 2 | 4;
+  lineNumbers: boolean;
+  lineWrapping: boolean;
+  autoCompile: boolean;
+};
 export type BuildResult =
   | { ok: true; bytes: Uint8Array; name: string; log: string }
   | { ok: false; message: string; log: string };
@@ -19,10 +28,13 @@ export type BuildResult =
 export interface QuireApi {
   platform: string;
   start(): Promise<Workspace & { preferences: Preferences }>;
-  savePreferences(appearance: Appearance, editorSize: number): Promise<Preferences>;
+  savePreferences(preferences: Preferences): Promise<Preferences>;
+  copyMcpConfig(id: string, write: boolean): Promise<void>;
   openFolder(): Promise<Workspace | null>;
   selectProject(id: string): Promise<Workspace>;
-  newProject(name: string): Promise<Workspace>;
+  newProject(details: {
+    name: string; title: string; author: string; course: string; template: TemplateId;
+  }): Promise<Workspace>;
   connect(link: string, token: string, name: string): Promise<Workspace>;
   configureConnection(id: string, token: string, auto: boolean): Promise<Project>;
   openOverleaf(id: string): Promise<void>;

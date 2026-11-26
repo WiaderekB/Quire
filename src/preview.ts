@@ -26,18 +26,17 @@ export class Preview {
 
   get hasDocument() { return !!this.#document; }
 
-  async load(data?: Uint8Array) {
+  async load(data?: Uint8Array, keepViewport = false) {
     const generation = ++this.#generation;
-    const loading = this.#loading;
-    this.#loading = undefined;
-    this.#document = undefined;
-    this.#renders.forEach(render => render.cancel());
-    this.#renders.clear();
-    this.#pages = [];
-    this.stack.replaceChildren();
-    this.status(0, 0, "Fit");
-    await loading?.destroy().catch(() => {});
-    if (!data || generation !== this.#generation) return;
+    if (!data) {
+      const loading = this.#loading;
+      this.#loading = undefined;
+      this.#document = undefined;
+      this.#clearPages();
+      this.status(0, 0, "Fit");
+      await loading?.destroy().catch(() => {});
+      return;
+    }
 
     const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist");
     if (generation !== this.#generation) return;
@@ -49,18 +48,31 @@ export class Preview {
       wasmUrl: new URL("pdf/wasm/", location.href).href,
       iccUrl: new URL("pdf/iccs/", location.href).href,
     });
+    let document: PDFDocumentProxy;
+    let sizes: { width: number; height: number }[];
+    try {
+      document = await next.promise;
+      sizes = await Promise.all(Array.from({ length: document.numPages }, async (_, index) =>
+        (await document.getPage(index + 1)).getViewport({ scale: 1 }),
+      ));
+    } catch (error) {
+      await next.destroy().catch(() => {});
+      if (generation === this.#generation) throw error;
+      return;
+    }
+    if (generation !== this.#generation) {
+      await next.destroy().catch(() => {});
+      return;
+    }
+    const previous = this.#loading;
+    const oldScroll = keepViewport ? { top: this.viewport.scrollTop, left: this.viewport.scrollLeft } : { top: 0, left: 0 };
+    this.#clearPages();
     this.#loading = next;
-    const document = await next.promise;
-    if (generation !== this.#generation) return;
-    const sizes = await Promise.all(Array.from({ length: document.numPages }, async (_, index) =>
-      (await document.getPage(index + 1)).getViewport({ scale: 1 }),
-    ));
-    if (generation !== this.#generation) return;
     this.#document = document;
     this.#widths = sizes.map(size => size.width);
     this.#heights = sizes.map(size => size.height);
     this.#current = 1;
-    this.#fit = true;
+    if (!keepViewport || !previous) this.#fit = true;
     this.#pages = sizes.map((_, index) => {
       const page = window.document.createElement("div");
       page.className = "pdf-page";
@@ -68,8 +80,17 @@ export class Preview {
       this.stack.append(page);
       return page;
     });
-    this.viewport.scrollTop = 0;
     this.#layout();
+    this.viewport.scrollTo(oldScroll);
+    this.#visiblePages();
+    void previous?.destroy().catch(() => {});
+  }
+
+  #clearPages() {
+    this.#renders.forEach(render => render.cancel());
+    this.#renders.clear();
+    this.#pages = [];
+    this.stack.replaceChildren();
   }
 
   zoom(step: number) {

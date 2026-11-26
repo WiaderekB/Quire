@@ -10,6 +10,7 @@ import {
 } from "@codemirror/view";
 import type { ViewUpdate } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
+import type { Preferences } from "./api";
 
 const tex = StreamLanguage.define({
   ...stex,
@@ -50,23 +51,40 @@ function completeTex(context: CompletionContext) {
 }
 
 const editability = new Compartment();
+const editorOptions = new Compartment();
+
+function editorExtensions(preferences: Preferences) {
+  return [
+    EditorState.tabSize.of(preferences.tabSize),
+    indentUnit.of(" ".repeat(preferences.tabSize)),
+    ...(preferences.lineNumbers ? [lineNumbers(), highlightActiveLineGutter()] : []),
+    ...(preferences.lineWrapping ? [EditorView.lineWrapping] : []),
+  ];
+}
+
+export function configureEditor(view: EditorView | undefined, preferences: Preferences) {
+  view?.dispatch({ effects: editorOptions.reconfigure(editorExtensions(preferences)) });
+}
 
 export function setReadOnly(view: EditorView | undefined, readonly: boolean) {
   view?.dispatch({ effects: editability.reconfigure(EditorState.readOnly.of(readonly)) });
 }
 
-export function createEditor(parent: HTMLElement, file: string, text: string, onUpdate: (update: ViewUpdate) => void) {
+export function createEditor(
+  parent: HTMLElement, file: string, text: string, onUpdate: (update: ViewUpdate) => void,
+  preferences: Preferences, previousState?: EditorState,
+) {
   const latex = /\.(?:tex|sty|cls|ltx|tikz|pgf|bib|latex|bbl)$/i.test(file);
   return new EditorView({
     parent,
-    state: EditorState.create({
+    state: previousState ?? EditorState.create({
       doc: text,
       extensions: [
-        lineNumbers(), highlightActiveLineGutter(), highlightActiveLine(), history(), drawSelection(),
-        EditorView.lineWrapping, bracketMatching(), closeBrackets(), highlightSelectionMatches(),
+        highlightActiveLine(), history(), drawSelection(),
+        bracketMatching(), closeBrackets(), highlightSelectionMatches(),
         EditorView.contentAttributes.of({ "aria-label": file, spellcheck: "false", autocapitalize: "off" }),
         EditorState.lineSeparator.of(text.includes("\r\n") ? "\r\n" : "\n"),
-        EditorState.tabSize.of(2), indentUnit.of("  "),
+        editorOptions.of(editorExtensions(preferences)),
         editability.of(EditorState.readOnly.of(false)),
         keymap.of([
           ...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...searchKeymap, ...completionKeymap,

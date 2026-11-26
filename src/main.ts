@@ -1,25 +1,29 @@
 import "@fontsource/ibm-plex-mono/latin-400.css";
 import "@fontsource/ibm-plex-mono/latin-500.css";
 import "./style.css";
-import { openSearchPanel } from "@codemirror/search";
+import { gotoLine, openSearchPanel } from "@codemirror/search";
+import type { EditorState } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
 import { api } from "./api";
 import type { Appearance, Engine, Preferences, ProjectFile, Source, Workspace } from "./api";
-import { createEditor, getHeadings, revealLine, setReadOnly } from "./editor";
+import { configureEditor, createEditor, getHeadings, revealLine, setReadOnly } from "./editor";
 import { icon, iconButton } from "./icons";
 import type { Icon } from "./icons";
 import { Preview } from "./preview";
+import { templates, texText } from "../desktop/templates.mjs";
+import type { TemplateId } from "../desktop/templates.mjs";
 
 const mac = api.platform === "darwin";
 const shortcut = mac ? "⌘↵" : "Ctrl+↵";
 const settingsShortcut = mac ? "⌘," : "Ctrl+,";
+const quickShortcut = mac ? "⌘K" : "Ctrl+K";
 const app = document.querySelector<HTMLElement>("#app")!;
 app.classList.toggle("mac", mac);
 app.innerHTML = `
   <header class="topbar">
     <div class="top-leading">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">${icon("layers")}</span>
+        <span class="brand-mark" aria-hidden="true">${icon("files")}</span>
         <span>Quire</span>
       </div>
       <span class="toolbar-divider"></span>
@@ -29,6 +33,7 @@ app.innerHTML = `
         </button>
         <div id="project-popover" class="popover" hidden></div>
       </div>
+      <button id="quick-open" class="icon-button" title="Quick open (${quickShortcut})" aria-label="Quick open">${icon("search")}</button>
     </div>
     <div class="view-switch" role="group" aria-label="Workspace view">
       <button data-view="editor" title="Source only" aria-label="Source only" aria-pressed="false">${icon("fileCode")}<span>Source</span></button>
@@ -60,14 +65,13 @@ app.innerHTML = `
     <div class="document-panes">
     <section class="source-pane" aria-label="Source editor">
       <div class="pane-bar source-bar">
-        <div class="pane-leading">
-          <div class="file-title" id="file-title" hidden>
-            <span id="file-kind"></span><span id="file-directory" hidden></span><span id="filename"></span><i id="dirty-dot" title="Unsaved changes" hidden></i>
-          </div>
+        <div id="file-tabs" class="file-tabs" role="tablist" aria-label="Open project files"></div>
+        <div class="source-actions">
+          <button id="insert-block" class="icon-button" title="Insert LaTeX block" aria-label="Insert LaTeX block">${icon("plus")}</button>
+          <button id="find-button" class="icon-button" title="Find in file" aria-label="Find in file">${icon("search")}</button>
         </div>
-        <button id="find-button" class="icon-button" title="Find in file" aria-label="Find in file">${icon("search")}</button>
       </div>
-      <div id="editor" class="editor"></div>
+      <div id="editor" class="editor" role="tabpanel" aria-label="Source"></div>
       <div id="editor-empty" class="empty-state" hidden></div>
     </section>
     <div id="pane-divider" class="pane-divider" role="separator" tabindex="0" aria-orientation="vertical"
@@ -125,6 +129,17 @@ app.innerHTML = `
         <button type="submit" id="confirm-dialog" class="primary-button"></button>
       </div>
     </form>
+  </dialog>
+  <dialog id="quick-palette" class="quick-palette" aria-label="Quick open">
+    <form id="quick-form">
+      <label class="quick-query">${icon("search")}
+        <input id="quick-input" role="combobox" aria-expanded="true" aria-autocomplete="list"
+          aria-label="Find a file or command" aria-controls="quick-results" placeholder="Find a file or command…" autocomplete="off" spellcheck="false">
+      </label>
+      <ul id="quick-results" role="listbox" aria-label="Results"></ul>
+      <p id="quick-empty" class="quick-empty" hidden>No matching files or commands.</p>
+      <footer class="quick-hints"><span><kbd>↑</kbd> <kbd>↓</kbd> Choose</span><span><kbd>↵</kbd> Open</span><span><kbd>Esc</kbd> Close</span></footer>
+    </form>
   </dialog>`;
 
 const el = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id)! as T;
@@ -134,9 +149,13 @@ const divider = el("pane-divider");
 const editorHost = el("editor");
 const dialog = el<HTMLDialogElement>("dialog");
 const form = el<HTMLFormElement>("dialog-form");
+const quick = el<HTMLDialogElement>("quick-palette");
+const quickInput = el<HTMLInputElement>("quick-input");
+const quickResults = el("quick-results");
 const popover = el("project-popover");
 const collapse = new Set<string>();
-const openedFiles = new Map<string, string>();
+const tabBar = el("file-tabs");
+const storedEditors = new Map<string, { version: string; state: EditorState; scrollTop: number }>();
 const viewButtons = [...app.querySelectorAll<HTMLButtonElement>(".view-switch button")];
 let workspace: Workspace = { project: null, files: [], recent: [] };
 let view: EditorView | undefined;
@@ -145,6 +164,7 @@ let activeFile: ProjectFile | undefined;
 let saveTimer: number | undefined;
 let saveInProgress: Promise<void> | undefined;
 let autoSyncTimer: number | undefined;
+let autoCompileTimer: number | undefined;
 let toastTimer: number | undefined;
 let syncingProject: string | undefined;
 let applying = false;
@@ -162,8 +182,15 @@ let savePending = false;
 let editCount = 0;
 let dialogAction: ((data: FormData) => Promise<void>) | undefined;
 let dialogBusy = false;
-let preferences: Preferences = { appearance: "system", editorSize: 14 };
+let preferences: Preferences = {
+  appearance: "system", editorSize: 14, tabSize: 2, lineNumbers: true, lineWrapping: true, autoCompile: false,
+};
 let split = 52;
+let tabs: string[] = [];
+let focusRestore: { mode: string; sidebar: boolean } | undefined;
+type QuickItem = { label: string; detail?: string; key?: string; symbol: Icon; action: () => void | Promise<unknown> };
+let quickItems: QuickItem[] = [];
+let quickSelection = 0;
 
 const preview = new Preview(el("preview-scroll"), el("paper-stack"), (page, pages, zoom) => {
   const count = el("page-count");
@@ -202,20 +229,36 @@ function run(action: () => void | Promise<unknown>) {
   }
 }
 
-function showView(mode: string) {
+function showView(mode: string, persist = true) {
+  if (persist && focusRestore) toggleFocusMode();
   if (!["editor", "split", "preview"].includes(mode)) mode = "split";
   main.dataset.view = mode;
   divider.hidden = mode !== "split";
-  localStorage.setItem("view", mode);
+  if (persist) localStorage.setItem("view", mode);
   for (const button of viewButtons) button.setAttribute("aria-pressed", String(button.dataset.view === mode));
   if (mode !== "preview") view?.requestMeasure();
 }
 
-function showSidebar(show: boolean) {
+function showSidebar(show: boolean, persist = true) {
+  if (persist && focusRestore) toggleFocusMode();
   main.classList.toggle("sidebar-hidden", !show);
   el("settings-collapsed").hidden = show;
   el("toggle-sidebar").setAttribute("aria-pressed", String(show));
-  localStorage.setItem("sidebar", show ? "open" : "closed");
+  if (persist) localStorage.setItem("sidebar", show ? "open" : "closed");
+}
+
+function toggleFocusMode() {
+  if (focusRestore) {
+    const previous = focusRestore;
+    focusRestore = undefined;
+    showView(previous.mode, false);
+    showSidebar(previous.sidebar, false);
+  } else {
+    focusRestore = { mode: main.dataset.view ?? "split", sidebar: !main.classList.contains("sidebar-hidden") };
+    showView("editor", false);
+    showSidebar(false, false);
+  }
+  if (main.dataset.view !== "preview") view?.focus();
 }
 
 function resizeSplit(value: number, persist = true) {
@@ -247,7 +290,8 @@ function renderStatus() {
     !workspace.project ? "" : saveError ? "Save failed" : savePending ? "Saving…" : "Saved locally",
     saveError ? "error" : savePending ? "working" : "good");
   el("save-status").title = saveError;
-  el("dirty-dot").hidden = !savePending;
+  const dirty = tabBar.querySelector<HTMLElement>(".active .tab-dirty");
+  if (dirty) dirty.hidden = !savePending;
   setStatus("sync-status", syncError ? "circleAlert" : syncing ? "refresh" : "cloudCheck", syncMessage,
     syncError ? "error" : syncing ? "working" : "");
   el("sync-status").title = syncMessage;
@@ -258,6 +302,7 @@ function renderStatus() {
   el<HTMLButtonElement>("new-file").disabled = !workspace.project || applying || switching || switchingFile;
   el<HTMLButtonElement>("build-settings").disabled = !workspace.project || !workspace.files.some(file => /\.tex$/i.test(file.path));
   el<HTMLButtonElement>("find-button").disabled = !view;
+  el<HTMLButtonElement>("insert-block").disabled = !view || !/\.(tex|ltx)$/i.test(activeFile?.path ?? "") || applying;
   const cloud = el<HTMLButtonElement>("cloud-button");
   const connected = !!workspace.project?.connection;
   const label = connected ? syncing ? "Syncing…" : "Sync Overleaf" : "Connect Overleaf";
@@ -277,6 +322,102 @@ function fileName(path: string) {
 
 function fileSymbol(path: string): Icon {
   return /\.(tex|cls|sty)$/i.test(path) ? "fileCode" : /\.bib$/i.test(path) ? "bookOpen" : "file";
+}
+
+function persistTabs() {
+  if (workspace.project) {
+    localStorage.setItem(`tabs:${workspace.project.id}`, JSON.stringify({ tabs, active: activeFile?.path }));
+  }
+}
+
+function restoreTabs(id?: string): string | undefined {
+  tabs = [];
+  if (!id) return;
+  try {
+    const saved = JSON.parse(localStorage.getItem(`tabs:${id}`) ?? "{}");
+    const files = new Set(workspace.files.map(file => file.path));
+    if (Array.isArray(saved.tabs)) {
+      tabs = [...new Set<string>(saved.tabs.filter((path: unknown) => typeof path === "string" && files.has(path)))];
+    }
+    return tabs.includes(saved.active) ? saved.active : tabs[0];
+  } catch {
+    return undefined;
+  }
+}
+
+function tabKey(id: string, file: string) {
+  return id + "\0" + file;
+}
+
+function rememberEditor() {
+  if (!workspace.project || !activeFile || !view || !source) return;
+  storedEditors.set(tabKey(workspace.project.id, activeFile.path), {
+    version: source.version, state: view.state, scrollTop: view.scrollDOM.scrollTop,
+  });
+}
+
+function renderTabs() {
+  tabBar.replaceChildren();
+  for (const [index, path] of tabs.entries()) {
+    const file = workspace.files.find(entry => entry.path === path);
+    if (!file) continue;
+    const active = path === activeFile?.path;
+    const wrapper = document.createElement("div");
+    wrapper.className = "editor-tab";
+    wrapper.setAttribute("role", "presentation");
+    wrapper.classList.toggle("active", active);
+    const tab = document.createElement("button");
+    tab.type = "button";
+    tab.id = `source-tab-${index}`;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-controls", "editor");
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+    tab.title = path;
+    const name = fileName(path);
+    const label = document.createElement("span");
+    label.textContent = tabs.some(entry => entry !== path && fileName(entry) === name) ? path : name;
+    tab.innerHTML = icon(fileSymbol(path));
+    tab.append(label);
+    tab.addEventListener("click", () => run(() => openFile(file)));
+    const dirty = document.createElement("i");
+    dirty.className = "tab-dirty";
+    dirty.title = "Unsaved changes";
+    dirty.hidden = !active || !savePending;
+    const close = iconButton("x", `Close ${name}`);
+    close.classList.add("tab-close");
+    close.tabIndex = -1;
+    close.addEventListener("click", () => run(() => closeTab(path)));
+    wrapper.append(tab, dirty, close);
+    tabBar.append(wrapper);
+    if (active) {
+      editorHost.setAttribute("aria-labelledby", tab.id);
+      wrapper.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }
+  if (!activeFile) editorHost.removeAttribute("aria-labelledby");
+}
+
+async function closeTab(path = activeFile?.path) {
+  if (!path || !workspace.project || switchingFile || switching || applying) return;
+  const index = tabs.indexOf(path);
+  if (index < 0) return;
+  if (activeFile?.path === path) {
+    const adjacent = tabs[index + 1] ?? tabs[index - 1];
+    await openFile(workspace.files.find(file => file.path === adjacent));
+  }
+  storedEditors.delete(tabKey(workspace.project.id, path));
+  tabs = tabs.filter(tab => tab !== path);
+  persistTabs();
+  renderTabs();
+}
+
+async function cycleTabs(step: number, focusEditor = true) {
+  if (tabs.length < 2) return;
+  const index = tabs.indexOf(activeFile?.path ?? "");
+  const next = tabs[(Math.max(0, index) + step + tabs.length) % tabs.length];
+  await openFile(workspace.files.find(file => file.path === next), { focus: focusEditor });
+  if (!focusEditor) tabBar.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
 }
 
 function treeRow(label: string, depth: number, symbol: Icon, action: () => void, type: string) {
@@ -419,6 +560,7 @@ async function flush() {
     saveError = "";
     if (project.connection && !syncingProject && !syncError) syncMessage = "Changes to sync";
     queueSync();
+    if (!building) queueCompile();
   }).catch(error => {
     saveError = message(error);
     savePending = true;
@@ -458,6 +600,7 @@ function textButton(label: string, callback: () => void, kind = "secondary-butto
 async function openFile(file?: ProjectFile, { reload = false, focus = true } = {}) {
   if (switchingFile || (applying && !reload)) return;
   if (!reload && file && view && file.path === activeFile?.path) {
+    if (focus && main.dataset.view === "preview") showView("split");
     if (focus) view.focus();
     return;
   }
@@ -469,31 +612,41 @@ async function openFile(file?: ProjectFile, { reload = false, focus = true } = {
     let loaded: Source | undefined;
     if (project && file?.editable) loaded = await api.read(project.id, file.path);
     if (reload && file?.path === activeFile?.path && loaded?.version === source?.version && view) return;
+    if (reload && view && file?.path === activeFile?.path && loaded?.version !== source?.version) {
+      if (preview.hasDocument) {
+        buildStale = true;
+        buildMessage = "Preview needs compilation";
+      }
+      if (project?.connection && !syncingProject && !syncError) {
+        syncMessage = "Changes to sync";
+        queueSync();
+      }
+      queueCompile();
+    }
+    rememberEditor();
     view?.destroy();
     view = undefined;
     source = loaded;
     activeFile = file;
-    el("file-title").hidden = !file;
-    el("file-kind").innerHTML = file ? icon(fileSymbol(file.path)) : "";
-    const directory = file?.path.split("/").slice(0, -1).join(" / ");
-    el("file-directory").textContent = directory ? directory + " /" : "";
-    el("file-directory").hidden = !directory;
-    el("filename").textContent = file ? fileName(file.path) : "";
-    el("filename").title = file?.path ?? "";
     el("editor-empty").hidden = true;
     saveError = "";
     savePending = false;
     if (project && file) {
-      openedFiles.set(project.id, file.path);
+      if (!tabs.includes(file.path)) tabs.push(file.path);
       if (loaded) {
         if (focus && main.dataset.view === "preview") showView("split");
-        view = createEditor(editorHost, file.path, loaded.text, edited);
-        view.scrollDOM.scrollTop = 0;
+        const previous = storedEditors.get(tabKey(project.id, file.path));
+        const restored = previous?.version === loaded.version ? previous : undefined;
+        view = createEditor(editorHost, file.path, loaded.text, edited, preferences, restored?.state);
+        if (restored) configureEditor(view, preferences);
+        view.scrollDOM.scrollTop = restored?.scrollTop ?? 0;
         if (focus) view.focus();
       } else {
         editorPlaceholder(fileSymbol(file.path), fileName(file.path), "Open this file with another app from the project folder.",
           textButton("Show file", () => run(() => api.reveal(project.id, file.path))));
       }
+    } else if (project && workspace.files.length) {
+      editorPlaceholder("fileCode", "No file open", "Choose a file from the sidebar.");
     } else if (project) {
       editorPlaceholder("fileCode", "Start with a source file", "Add a .tex file to write and compile.",
         textButton("New file", newFile, "primary-button"));
@@ -501,10 +654,12 @@ async function openFile(file?: ProjectFile, { reload = false, focus = true } = {
       editorPlaceholder("folderOpen", "Open a project", "Choose a folder or create a LaTeX project.",
         textButton("Open folder", () => run(openFolder), "primary-button"));
     }
+    persistTabs();
   } finally {
     setReadOnly(view, applying);
     switchingFile = false;
     renderFiles();
+    renderTabs();
     renderOutline();
     renderCursor();
     renderStatus();
@@ -512,14 +667,16 @@ async function openFile(file?: ProjectFile, { reload = false, focus = true } = {
 }
 
 async function loadWorkspace(next: Workspace, first = false) {
-  const remembered = next.project && openedFiles.get(next.project.id);
+  rememberEditor();
   view?.destroy();
   view = undefined;
   source = undefined;
   activeFile = undefined;
   workspace = next;
+  const remembered = restoreTabs(next.project?.id);
   collapse.clear();
   clearTimeout(autoSyncTimer);
+  clearTimeout(autoCompileTimer);
   clearTimeout(saveTimer);
   el("project-name").textContent = next.project?.name ?? "Projects";
   document.title = next.project ? `${next.project.name} — Quire` : "Quire";
@@ -536,14 +693,15 @@ async function loadWorkspace(next: Workspace, first = false) {
   const results = await Promise.allSettled([openFile(initial, { reload: true, focus: !first && !dialog.open }), showPdf(next.preview)]);
   for (const result of results) if (result.status === "rejected") notify(message(result.reason), true);
   if (next.project?.connection?.auto) queueSync(6000);
+  if (!next.preview) queueCompile();
 }
 
-async function showPdf(bytes?: Uint8Array) {
+async function showPdf(bytes?: Uint8Array, keepViewport = false) {
   el("preview-empty").hidden = !!bytes;
   try {
-    await preview.load(bytes);
+    await preview.load(bytes, keepViewport);
   } catch (error) {
-    el("preview-empty").hidden = false;
+    el("preview-empty").hidden = preview.hasDocument;
     throw error;
   }
 }
@@ -607,12 +765,14 @@ async function sync(manual: boolean) {
         const fresh = await api.refresh(project.id);
         const previous = activeFile?.path;
         workspace = fresh;
+        tabs = tabs.filter(path => fresh.files.some(file => file.path === path));
         const file = fresh.files.find(entry => entry.path === previous) ?? fresh.files.find(entry => entry.path === fresh.project?.main);
         await openFile(file, { reload: true, focus: hadFocus === true });
         if (preview.hasDocument) {
           buildMessage = "Preview needs compilation";
           buildStale = true;
         }
+        queueCompile();
       }
     } finally {
       applying = false;
@@ -642,9 +802,19 @@ async function sync(manual: boolean) {
   }
 }
 
-async function build() {
+function queueCompile(delay = 950) {
+  clearTimeout(autoCompileTimer);
+  if (!preferences.autoCompile || !workspace.project?.main) return;
+  autoCompileTimer = window.setTimeout(() => {
+    if (building || switching || switchingFile || applying || dialog.open || quick.open) queueCompile(500);
+    else if (!saveError) void build(true);
+  }, delay);
+}
+
+async function build(automatic = false) {
   const project = workspace.project;
   if (!project?.main || building || switching || switchingFile || applying) return;
+  clearTimeout(autoCompileTimer);
   building = true;
   buildError = false;
   buildStale = false;
@@ -656,25 +826,28 @@ async function build() {
     const result = await api.build(project.id);
     currentBuildLog = result.log;
     el("log-text").textContent = result.log;
-    if (main.dataset.view === "editor") showView("split");
+    if (!automatic && main.dataset.view === "editor" && !focusRestore) showView("split");
     if (result.ok) {
-      await showPdf(result.bytes);
+      await showPdf(result.bytes, true);
       buildStale = editCount !== revision;
       buildMessage = buildStale ? "Preview needs compilation" : "PDF up to date";
       el("build-log").hidden = true;
     } else {
       buildError = true;
       buildMessage = "Build failed";
-      el("build-log").hidden = false;
-      notify(result.message, true);
+      if (!automatic) {
+        el("build-log").hidden = false;
+        notify(result.message, true);
+      }
     }
   } catch (error) {
     buildError = true;
     buildMessage = "Build failed";
-    notify(message(error), true);
+    if (!automatic) notify(message(error), true);
   } finally {
     building = false;
     renderStatus();
+    if (editCount !== revision) queueCompile();
   }
 }
 
@@ -727,6 +900,99 @@ function showMenu() {
   popover.querySelector("button")?.focus();
 }
 
+function quickCommands(): QuickItem[] {
+  const modifier = mac ? "⌘" : "Ctrl+";
+  const commands: QuickItem[] = [
+    { label: "New project", key: mac ? "⌘⇧N" : "Ctrl+Shift+N", symbol: "plus", action: newProject },
+    { label: "Open folder", key: modifier + "O", symbol: "folderOpen", action: openFolder },
+    { label: "Compile project", key: shortcut, symbol: "play", action: build },
+    { label: focusRestore ? "Exit focus mode" : "Enter focus mode", symbol: "scan", action: toggleFocusMode },
+    { label: "Go to line", key: modifier + "L", symbol: "list", action: goToLine },
+    { label: "Insert LaTeX block", symbol: "plus", action: openInsert },
+    { label: "Settings", key: settingsShortcut, symbol: "gear", action: openSettings },
+    { label: "Keyboard shortcuts", key: modifier + "/", symbol: "list", action: openShortcuts },
+  ];
+  if (workspace.project?.connection) {
+    commands.push({ label: "Sync Overleaf", symbol: "refresh", action: () => sync(true) });
+  } else commands.push({ label: "Connect Overleaf", symbol: "cloud", action: connect });
+  return commands;
+}
+
+function highlightQuickItem(index: number) {
+  if (!quickItems.length) {
+    quickInput.removeAttribute("aria-activedescendant");
+    return;
+  }
+  quickSelection = (index + quickItems.length) % quickItems.length;
+  for (const [position, row] of [...quickResults.children].entries()) {
+    const selected = position === quickSelection;
+    row.setAttribute("aria-selected", String(selected));
+    if (selected) {
+      quickInput.setAttribute("aria-activedescendant", row.id);
+      row.scrollIntoView({ block: "nearest" });
+    }
+  }
+}
+
+function renderQuickItems() {
+  const input = quickInput.value.trim();
+  const commandsOnly = input.startsWith(">");
+  const query = (commandsOnly ? input.slice(1).trim() : input).toLocaleLowerCase();
+  const terms = query.split(/\s+/);
+  const files: QuickItem[] = commandsOnly ? [] : workspace.files.map(file => ({
+    label: fileName(file.path), detail: file.path.includes("/") ? file.path : undefined, symbol: fileSymbol(file.path),
+    action: () => openFile(file),
+  }));
+  const commands = quickCommands();
+  const items = query ? [...files, ...commands] : [...files.slice(0, 4), ...commands];
+  quickItems = items.filter(item => terms.every(term =>
+    (item.label + " " + (item.detail ?? "")).toLocaleLowerCase().includes(term),
+  ));
+  if (query) {
+    quickItems.sort((first, second) =>
+      Number(second.label.toLocaleLowerCase().startsWith(query)) - Number(first.label.toLocaleLowerCase().startsWith(query)),
+    );
+  }
+  quickItems = quickItems.slice(0, 9);
+  quickResults.replaceChildren();
+  for (const [index, item] of quickItems.entries()) {
+    const row = document.createElement("li");
+    row.id = `quick-option-${index}`;
+    row.setAttribute("role", "option");
+    row.innerHTML = icon(item.symbol);
+    const label = document.createElement("span");
+    label.textContent = item.label;
+    row.append(label);
+    if (item.detail || item.key) {
+      const detail = document.createElement(item.key ? "kbd" : "small");
+      detail.textContent = item.key ?? item.detail ?? "";
+      row.append(detail);
+    }
+    row.addEventListener("mouseenter", () => highlightQuickItem(index));
+    row.addEventListener("mousedown", event => event.preventDefault());
+    row.addEventListener("click", () => chooseQuickItem(index));
+    quickResults.append(row);
+  }
+  el("quick-empty").hidden = quickItems.length > 0;
+  highlightQuickItem(0);
+}
+
+function chooseQuickItem(index: number) {
+  const item = quickItems[index];
+  if (!item) return;
+  quick.close();
+  run(item.action);
+}
+
+function openQuickPalette() {
+  if (dialog.open || quick.open) return;
+  closeMenu();
+  quickInput.value = "";
+  quick.showModal();
+  renderQuickItems();
+  quickInput.focus();
+}
+
 function field(label: string, name: string, options: Partial<HTMLInputElement> = {}) {
   const wrap = document.createElement("label");
   wrap.className = "field";
@@ -752,6 +1018,7 @@ function select(label: string, name: string, options: [string, string][], value:
 function showDialog(options: {
   title: string; description: string; symbol: Icon; label: string; fields: HTMLElement[];
   submit: (data: FormData) => Promise<void>;
+  actionOnly?: boolean;
 }) {
   if (dialog.open) return;
   closeMenu();
@@ -761,6 +1028,7 @@ function showDialog(options: {
   el("dialog-description").hidden = !options.description;
   el("dialog-fields").replaceChildren(...options.fields);
   el("dialog-error").hidden = true;
+  el("cancel-dialog").hidden = options.actionOnly === true;
   el<HTMLButtonElement>("confirm-dialog").textContent = options.label;
   dialogAction = options.submit;
   dialog.showModal();
@@ -772,6 +1040,7 @@ const value = (data: FormData, name: string) => String(data.get(name) ?? "").tri
 function setPreferences(next: Preferences) {
   preferences = next;
   editorHost.style.setProperty("--code-size", `${next.editorSize}px`);
+  configureEditor(view, next);
   view?.requestMeasure();
 }
 
@@ -800,14 +1069,108 @@ function openSettings() {
   }
   appearance.append(legend, choices);
   const sizes: [string, string][] = ["12", "13", "14", "15", "16", "17", "18"].map(size => [size, `${size} px`]);
+  const editorChoices = document.createElement("div");
+  editorChoices.className = "editor-preferences";
+  editorChoices.append(
+    select("Text size", "size", sizes, String(preferences.editorSize)),
+    select("Indentation", "tab-size", [["2", "2 spaces"], ["4", "4 spaces"]], String(preferences.tabSize)),
+  );
+  const editorToggles = document.createElement("div");
+  editorToggles.className = "editor-preferences";
+  for (const [title, name, checked] of [
+    ["Line numbers", "lineNumbers", preferences.lineNumbers],
+    ["Wrap long lines", "lineWrapping", preferences.lineWrapping],
+  ] as const) {
+    const option = field(title, name, { type: "checkbox", checked });
+    option.classList.add("checkbox-field");
+    editorToggles.append(option);
+  }
+  const autoCompile = field("Compile automatically after edits", "autoCompile", { type: "checkbox", checked: preferences.autoCompile });
+  autoCompile.classList.add("checkbox-field");
+  const editorSection = document.createElement("fieldset");
+  editorSection.className = "settings-section";
+  const editorLegend = document.createElement("legend");
+  editorLegend.textContent = "Editor";
+  editorSection.append(editorLegend, editorChoices, editorToggles);
+  const buildSection = document.createElement("fieldset");
+  buildSection.className = "settings-section";
+  const buildLegend = document.createElement("legend");
+  buildLegend.textContent = "Build";
+  buildSection.append(buildLegend, autoCompile);
+  const shortcuts = textButton("Keyboard shortcuts", () => {
+    dialog.close();
+    openShortcuts();
+  }, "text-link");
+  const links = document.createElement("div");
+  links.className = "editor-preferences";
+  links.append(shortcuts);
+  if (workspace.project) links.append(textButton("MCP for AI", () => {
+    dialog.close();
+    openMcpSettings();
+  }, "text-link"));
   showDialog({
     title: "Settings", symbol: "gear", label: "Save settings", description: "",
-    fields: [appearance, select("Editor text size", "size", sizes, String(preferences.editorSize))],
+    fields: [appearance, editorSection, buildSection, links],
     submit: async data => {
-      setPreferences(await api.savePreferences(value(data, "appearance") as Appearance, Number(value(data, "size"))));
+      setPreferences(await api.savePreferences({
+        appearance: value(data, "appearance") as Appearance,
+        editorSize: Number(value(data, "size")),
+        tabSize: Number(value(data, "tab-size")) as 2 | 4,
+        lineNumbers: data.has("lineNumbers"),
+        lineWrapping: data.has("lineWrapping"),
+        autoCompile: data.has("autoCompile"),
+      }));
+      queueCompile();
     },
   });
   appearance.querySelector<HTMLInputElement>("input:checked")?.focus();
+}
+
+function openMcpSettings() {
+  const project = workspace.project;
+  if (!project) return;
+  const write = field("Allow source edits", "write", { type: "checkbox" });
+  write.classList.add("checkbox-field");
+  showDialog({
+    title: "MCP for AI", symbol: "files", label: "Copy configuration",
+    description: `Connect an MCP client to ${project.name}. Use Node.js to run the local server.`,
+    fields: [write],
+    submit: async data => {
+      await api.copyMcpConfig(project.id, data.has("write"));
+      notify("MCP configuration copied");
+    },
+  });
+}
+
+function openShortcuts() {
+  const modifier = mac ? "⌘" : "Ctrl+";
+  const shift = mac ? "⇧" : "Shift+";
+  const entries = [
+    ["New project", modifier + shift + "N"], ["Open folder", modifier + "O"], ["New file", modifier + "N"],
+    ["Close tab", modifier + "W"], ["Previous tab", "Ctrl+Shift+Tab"], ["Next tab", "Ctrl+Tab"],
+    ["Quick open", quickShortcut], ["Find in file", modifier + "F"], ["Go to line", modifier + "L"],
+    ["Save source", modifier + "S"], ["Compile", shortcut],
+    ["Insert LaTeX block", modifier + shift + "I"],
+    ["Save PDF", modifier + shift + "S"], ["Sync Overleaf", modifier + shift + "R"],
+    ["Source / Split / PDF", modifier + "1 / 2 / 3"], ["Fit PDF page", modifier + "0"],
+    ["Toggle sidebar", modifier + "B"], ["Focus mode", modifier + shift + "F"],
+    ["Settings", settingsShortcut], ["Keyboard shortcuts", modifier + "/"],
+  ];
+  const list = document.createElement("dl");
+  list.className = "shortcuts-list";
+  for (const [name, keys] of entries) {
+    const term = document.createElement("dt");
+    term.textContent = name;
+    const detail = document.createElement("dd");
+    const key = document.createElement("kbd");
+    key.textContent = keys;
+    detail.append(key);
+    list.append(term, detail);
+  }
+  showDialog({
+    title: "Keyboard shortcuts", symbol: "list", label: "Done", description: "", fields: [list],
+    submit: async () => {}, actionOnly: true,
+  });
 }
 
 function findInFile() {
@@ -816,11 +1179,99 @@ function findInFile() {
   openSearchPanel(view);
 }
 
+function goToLine() {
+  if (!view) return;
+  if (main.dataset.view === "preview") showView("split");
+  gotoLine(view);
+}
+
 function newProject() {
+  const metadata = document.createElement("div");
+  metadata.className = "editor-preferences";
+  metadata.append(
+    field("Author", "author", { maxLength: 160 }),
+    field("Course", "course", { maxLength: 160 }),
+  );
   showDialog({
-    title: "New project", symbol: "folder", label: "Create project", description: "Start a LaTeX project on this device.",
-    fields: [field("Project name", "name", { placeholder: "Untitled paper", required: true, maxLength: 80 })],
-    submit: data => changeProject(() => api.newProject(value(data, "name"))),
+    title: "New project", symbol: "folder", label: "Create project", description: "",
+    fields: [
+      select("Template", "template", templates.map(template => [template.id, template.label]), "article"),
+      field("Project name", "name", { placeholder: "Untitled paper", required: true, maxLength: 80 }),
+      field("Document title", "title", { placeholder: "Uses the project name when blank", maxLength: 160 }),
+      metadata,
+    ],
+    submit: data => changeProject(() => api.newProject({
+      name: value(data, "name"), title: value(data, "title"), author: value(data, "author"),
+      course: value(data, "course"), template: value(data, "template") as TemplateId,
+    })),
+  });
+  form.querySelector<HTMLInputElement>('input[name="name"]')?.focus();
+}
+
+function openInsert() {
+  const target = view;
+  if (!target || !/\.(tex|ltx)$/i.test(activeFile?.path ?? "") || applying) return;
+  const kind = select("Block", "block", [["section", "Section"], ["equation", "Equation"], ["table", "Table"]], "section");
+  const details = document.createElement("div");
+  details.className = "block-details";
+  const choice = kind.querySelector("select")!;
+  function updateFields() {
+    if (choice.value === "section") {
+      details.replaceChildren(field("Section title", "content", { placeholder: "Introduction", required: true, maxLength: 160 }));
+    } else if (choice.value === "equation") {
+      details.replaceChildren(field("LaTeX expression", "content", { placeholder: "E = mc^2", required: true }));
+    } else {
+      details.replaceChildren(
+        field("Column headers", "content", { placeholder: "Trial, Time, Result", required: true }),
+        select("Rows", "rows", Array.from({ length: 8 }, (_, index) => {
+          const count = String(index + 1);
+          return [count, count];
+        }), "2"),
+      );
+    }
+  }
+  choice.addEventListener("change", updateFields);
+  updateFields();
+  showDialog({
+    title: "Insert LaTeX block", symbol: "plus", label: "Insert", description: "",
+    fields: [kind, details],
+    submit: async data => {
+      if (target !== view || applying) throw new Error("Choose a source file and try again.");
+      const content = value(data, "content");
+      if (!content) throw new Error("Enter a value for this block.");
+      const block = value(data, "block");
+      let latex = "";
+      if (block === "section") {
+        latex = `\\section{${texText(content)}}`;
+      } else if (block === "equation") {
+        latex = ["\\begin{equation}", "  " + content, "\\end{equation}"].join("\n");
+      } else {
+        const columns = content.split(",").map(header => header.trim());
+        if (columns.length < 2 || columns.length > 8 || !columns.every(Boolean)) {
+          throw new Error("Enter between two and eight column headers, separated by commas.");
+        }
+        const endRow = " \\\\";
+        latex = [
+          `\\begin{tabular}{${"l".repeat(columns.length)}}`,
+          "  " + columns.map(texText).join(" & ") + endRow,
+          "  \\hline",
+          ...Array.from({ length: Number(value(data, "rows")) }, () => "  " + columns.map(() => "{}").join(" & ") + endRow),
+          "\\end{tabular}",
+        ].join("\n");
+      }
+      const text = target.state.doc.toString();
+      const start = text.indexOf("\\begin{document}");
+      const end = text.lastIndexOf("\\end{document}");
+      const selection = target.state.selection.main;
+      const insert = "\n" + latex + "\n";
+      if (start >= 0 && end > start && (selection.from < start + "\\begin{document}".length || selection.to > end)) {
+        target.dispatch({
+          changes: { from: end, insert },
+          selection: { anchor: end + insert.length },
+          scrollIntoView: true,
+        });
+      } else target.dispatch(target.state.replaceSelection(insert));
+    },
   });
 }
 
@@ -922,6 +1373,17 @@ el("close-dialog").addEventListener("click", () => dialog.close());
 el("cancel-dialog").addEventListener("click", () => dialog.close());
 
 el("project-menu").addEventListener("click", showMenu);
+el("quick-open").addEventListener("click", openQuickPalette);
+quickInput.addEventListener("input", renderQuickItems);
+quickInput.addEventListener("keydown", event => {
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+  event.preventDefault();
+  highlightQuickItem(quickSelection + (event.key === "ArrowDown" ? 1 : -1));
+});
+el("quick-form").addEventListener("submit", event => {
+  event.preventDefault();
+  chooseQuickItem(quickSelection);
+});
 document.addEventListener("click", event => {
   if (!(event.target as HTMLElement).closest(".project-picker")) closeMenu();
 });
@@ -942,6 +1404,7 @@ el("build").addEventListener("click", () => void build());
 el("new-file").addEventListener("click", newFile);
 el("build-settings").addEventListener("click", buildSettings);
 el("find-button").addEventListener("click", findInFile);
+el("insert-block").addEventListener("click", openInsert);
 el("settings").addEventListener("click", openSettings);
 el("settings-collapsed").addEventListener("click", openSettings);
 el("zoom-out").addEventListener("click", () => preview.zoom(-0.1));
@@ -955,6 +1418,11 @@ el("build-status").addEventListener("click", () => {
 });
 el("close-log").addEventListener("click", () => { el("build-log").hidden = true; });
 viewButtons.forEach(button => button.addEventListener("click", () => showView(button.dataset.view!)));
+tabBar.addEventListener("keydown", event => {
+  if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+  event.preventDefault();
+  run(() => cycleTabs(event.key === "ArrowRight" ? 1 : -1, false));
+});
 divider.addEventListener("pointerdown", event => {
   if (event.button !== 0 || !event.isPrimary || divider.hasPointerCapture(event.pointerId)) return;
   divider.setPointerCapture(event.pointerId);
@@ -986,14 +1454,29 @@ api.onPrepareClose(() => {
   });
 });
 api.onCommand(command => {
-  if (dialog.open) return;
+  if (dialog.open || quick.open) return;
   if (command === "new") newProject();
   if (command === "new-file") newFile();
   if (command === "open") run(openFolder);
   if (command === "settings") openSettings();
+  if (command === "shortcuts") openShortcuts();
+  if (command === "quick-open") openQuickPalette();
   if (command === "save") run(flush);
   if (command === "build") void build();
   if (command === "find") findInFile();
+  if (command === "goto-line") goToLine();
+  if (command === "insert-block") openInsert();
+  if (command === "focus-mode") toggleFocusMode();
+  if (command === "close-tab") run(() => closeTab());
+  if (command === "next-tab") run(() => cycleTabs(1));
+  if (command === "previous-tab") run(() => cycleTabs(-1));
+  if (command === "source-view") showView("editor");
+  if (command === "split-view") showView("split");
+  if (command === "pdf-view") showView("preview");
+  if (command === "toggle-sidebar") showSidebar(main.classList.contains("sidebar-hidden"));
+  if (command === "pdf-fit") preview.fit();
+  if (command === "export" && preview.hasDocument && workspace.project) run(() => api.exportPdf(workspace.project!.id));
+  if (command === "sync") void sync(true);
 });
 
 window.setInterval(() => {
@@ -1001,6 +1484,11 @@ window.setInterval(() => {
 }, 60_000);
 window.addEventListener("online", () => {
   if (workspace.project?.connection?.auto && syncError && /unreachable/i.test(syncMessage)) void sync(false);
+});
+window.addEventListener("focus", () => {
+  if (activeFile?.editable && !savePending && !switching && !switchingFile && !applying && !dialog.open && !quick.open) {
+    run(() => openFile(activeFile, { reload: true, focus: view?.hasFocus === true }));
+  }
 });
 showSidebar(localStorage.getItem("sidebar") !== "closed");
 showView(localStorage.getItem("view") ?? "split");

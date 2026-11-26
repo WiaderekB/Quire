@@ -11,9 +11,9 @@ import externalLink from "lucide/icons/external-link.svg?raw";
 import file from "lucide/icons/file.svg?raw";
 import fileCode from "lucide/icons/file-code-2.svg?raw";
 import fileText from "lucide/icons/file-text.svg?raw";
+import files from "lucide/icons/files.svg?raw";
 import folder from "lucide/icons/folder.svg?raw";
 import folderOpen from "lucide/icons/folder-open.svg?raw";
-import layers from "lucide/icons/layers-2.svg?raw";
 import list from "lucide/icons/list.svg?raw";
 import minus from "lucide/icons/minus.svg?raw";
 import panelLeft from "lucide/icons/panel-left.svg?raw";
@@ -29,7 +29,7 @@ import x from "lucide/icons/x.svg?raw";
 
 const icons = {
   bookOpen, check, chevronDown, chevronRight, circleAlert, cloud, cloudCheck, columns2,
-  download, externalLink, file, fileCode, fileText, folder, folderOpen, gear, layers, list, minus,
+  download, externalLink, file, fileCode, fileText, files, folder, folderOpen, gear, list, minus,
   panelLeft, play, plus, refresh, scan, search, settings, terminal, x,
 };
 export type Icon = keyof typeof icons;

@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, net, protocol, safeStorage, shell } from "electron";
 import { randomUUID } from "node:crypto";
 import { cp, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { atomicWrite, createSource, listFiles, projectPath, readSource, saveSource } from "./files.mjs";
 import { compileProject } from "./latex.mjs";
+import { projectTemplate } from "./templates.mjs";
 import {
   cloneOverleaf, fetchOverleaf, integrateOverleaf, parseOverleafLink, pushOverleaf,
 } from "./overleaf.mjs";
@@ -69,15 +70,19 @@ function recentProjects() {
 }
 
 function preferences() {
-  const { appearance, editorSize } = state.preferences ?? {};
+  const { appearance, editorSize, tabSize, lineNumbers, lineWrapping, autoCompile } = state.preferences ?? {};
   return {
     appearance: appearances.includes(appearance) ? appearance : "system",
     editorSize: Number.isInteger(editorSize) && editorSize >= 12 && editorSize <= 18 ? editorSize : 14,
+    tabSize: tabSize === 4 ? 4 : 2,
+    lineNumbers: lineNumbers !== false,
+    lineWrapping: lineWrapping !== false,
+    autoCompile: autoCompile === true,
   };
 }
 
 function windowBackground() {
-  return nativeTheme.shouldUseDarkColors ? "#1d201e" : "#fafaf7";
+  return nativeTheme.shouldUseDarkColors ? "#222222" : "#fafafa";
 }
 
 function validateName(value) {
@@ -88,24 +93,11 @@ function validateName(value) {
   return name;
 }
 
-function projectTemplate(title) {
-  const escapes = { "\\": "\\textbackslash{}", "^": "\\textasciicircum{}", "~": "\\textasciitilde{}" };
-  const safe = title.replace(/[\\#$%&_{}^~]/g, character => escapes[character] ?? "\\" + character);
-  return [
-    "\\documentclass[11pt,a4paper]{article}",
-    "",
-    `\\title{${safe}}`,
-    "\\author{}",
-    "\\date{}",
-    "",
-    "\\begin{document}",
-    "\\maketitle",
-    "",
-    "\\section{Introduction}",
-    "",
-    "\\end{document}",
-    "",
-  ].join("\n");
+function optionalMetadata(value) {
+  if (typeof value !== "string" || value.length > 160 || /[\u0000-\u001f]/.test(value)) {
+    throw new Error("Use a single line of up to 160 characters for document details.");
+  }
+  return value.trim();
 }
 
 async function activate(project) {
@@ -209,12 +201,15 @@ const actions = {
       throw error;
     }
   },
-  async savePreferences(appearance, editorSize) {
-    if (!appearances.includes(appearance) || !Number.isInteger(editorSize) || editorSize < 12 || editorSize > 18) {
-      throw new Error("Choose a valid appearance and text size.");
+  async savePreferences(next) {
+    const { appearance, editorSize, tabSize, lineNumbers, lineWrapping, autoCompile } = next ?? {};
+    if (!appearances.includes(appearance) || !Number.isInteger(editorSize) || editorSize < 12 || editorSize > 18 ||
+        ![2, 4].includes(tabSize) || typeof lineNumbers !== "boolean" || typeof lineWrapping !== "boolean" ||
+        typeof autoCompile !== "boolean") {
+      throw new Error("Choose valid appearance and editor settings.");
     }
     const previous = state.preferences;
-    state.preferences = { appearance, editorSize };
+    state.preferences = { appearance, editorSize, tabSize, lineNumbers, lineWrapping, autoCompile };
     try {
       await saveState();
     } catch (error) {
@@ -223,6 +218,15 @@ const actions = {
     }
     nativeTheme.themeSource = appearance;
     return preferences();
+  },
+  copyMcpConfig(id, write) {
+    const project = getProject(id);
+    const server = app.isPackaged
+      ? path.join(process.resourcesPath, "mcp", "quire-mcp.mjs")
+      : path.join(renderer, "mcp", "quire-mcp.mjs");
+    const args = [server, "--project", project.root];
+    if (write === true) args.push("--write");
+    clipboard.writeText(JSON.stringify({ mcpServers: { quire: { command: "node", args } } }, null, 2));
   },
   async openFolder() {
     const result = await dialog.showOpenDialog(window, { title: "Open a LaTeX project", properties: ["openDirectory"] });
@@ -236,13 +240,19 @@ const actions = {
   selectProject(id) {
     return activate(getProject(id));
   },
-  async newProject(value) {
-    const name = validateName(value);
+  async newProject(details) {
+    const name = validateName(details?.name);
+    const contents = projectTemplate({
+      title: optionalMetadata(details.title) || name,
+      author: optionalMetadata(details.author),
+      course: optionalMetadata(details.course),
+      template: details.template,
+    });
     const id = randomUUID();
     const root = path.join(projectHome, id);
     await mkdir(root);
     try {
-      await writeFile(path.join(root, "main.tex"), projectTemplate(name));
+      await writeFile(path.join(root, "main.tex"), contents);
       return await activate({ id, name, root, main: "main.tex", engine: "pdflatex" });
     } catch (error) {
       await rm(root, { force: true, recursive: true });
@@ -386,12 +396,32 @@ function configureMenu() {
       command("New File…", "CmdOrCtrl+N", "new-file"),
       { type: "separator" },
       command("Save", "CmdOrCtrl+S", "save"),
+      command("Save PDF…", "CmdOrCtrl+Shift+S", "export"),
       command("Build", "CmdOrCtrl+Enter", "build"),
       command("Find in File…", "CmdOrCtrl+F", "find"),
+      command("Quick Open…", "CmdOrCtrl+K", "quick-open"),
+      command("Go to Line…", "CmdOrCtrl+L", "goto-line"),
+      command("Insert LaTeX Block…", "CmdOrCtrl+Shift+I", "insert-block"),
+      command("Sync Overleaf", "CmdOrCtrl+Shift+R", "sync"),
       ...(isMac ? [] : [command("Settings…", "CmdOrCtrl+,", "settings")]),
-      { type: "separator" }, { role: "close" },
+      { type: "separator" },
+      command("Close Tab", "CmdOrCtrl+W", "close-tab"),
+      { role: "close", label: "Close Window", accelerator: "CmdOrCtrl+Shift+W" },
     ] },
     { role: "editMenu" },
+    { label: "View", submenu: [
+      command("Source", "CmdOrCtrl+1", "source-view"),
+      command("Split", "CmdOrCtrl+2", "split-view"),
+      command("PDF", "CmdOrCtrl+3", "pdf-view"),
+      command("Toggle Sidebar", "CmdOrCtrl+B", "toggle-sidebar"),
+      command("Focus Mode", "CmdOrCtrl+Shift+F", "focus-mode"),
+      { type: "separator" },
+      command("Previous Tab", "Ctrl+Shift+Tab", "previous-tab"),
+      command("Next Tab", "Ctrl+Tab", "next-tab"),
+      { type: "separator" },
+      command("Fit PDF Page", "CmdOrCtrl+0", "pdf-fit"),
+      command("Keyboard Shortcuts", "CmdOrCtrl+/", "shortcuts"),
+    ] },
     { role: "windowMenu" },
   ]));
 }
