@@ -40,7 +40,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            xvfb xauth dbus-x11 libgtk-3-0t64 libnss3 libasound2t64 \
+            apparmor xvfb xauth dbus-x11 libgtk-3-0t64 libnss3 libasound2t64 \
             latexmk texlive-latex-base texlive-latex-recommended lmodern
 
       - name: Download, verify, and launch the published archive
@@ -63,7 +63,11 @@ jobs:
 
           cd "$directory"
           awk -v name="$archive" '$2 == name' SHA256SUMS.txt | sha256sum --check --strict
-          tar -xzf "$archive"
-          file "$bundle/quire"
+          sudo mkdir -m 0755 /opt/Quire
+          sudo tar -xzf "$archive" -C /opt/Quire --strip-components=1 --no-same-owner --no-same-permissions
+          sudo install -m 0644 "$GITHUB_WORKSPACE/packaging/linux/quire.apparmor" /etc/apparmor.d/quire
+          sudo apparmor_parser --replace /etc/apparmor.d/quire
+          sysctl kernel.apparmor_restrict_unprivileged_userns
+          file /opt/Quire/quire
           xvfb-run -a dbus-run-session -- node \
-            "$GITHUB_WORKSPACE/.github/scripts/smoke-linux-release.mjs" "$directory/$bundle/quire"
+            "$GITHUB_WORKSPACE/.github/scripts/smoke-linux-release.mjs" /opt/Quire/quire

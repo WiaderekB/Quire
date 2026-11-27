@@ -18,7 +18,7 @@ A local-first LaTeX editor for macOS and Linux. Edit ordinary folders offline, p
 
 Ready-to-upload packages are staged locally in `release/v0.4.0/`. Published builds are listed on GitHub Releases. [Build and release guide](docs/releasing.md)
 
-On macOS, open the DMG and drag Quire into Applications. The 0.4.0 DMG is an ad hoc signed developer build. On Linux, extract the archive and run the `quire` executable.
+On macOS, open the DMG and drag Quire into Applications. The 0.4.0 DMG is an ad hoc signed developer build. Ubuntu 24.04 requires an AppArmor profile for the Chromium sandbox. [Linux installation guide](docs/install-linux.md)
 
 Editing and autosave work offline. Install `latexmk` and the TeX packages your projects use to compile PDFs locally. Overleaf sync requires Git. [MacTeX](https://tug.org/mactex/) · [TeX Live](https://tug.org/texlive/)
 
