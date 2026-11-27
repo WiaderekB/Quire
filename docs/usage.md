@@ -4,13 +4,23 @@
 
 **Compile** uses pdfLaTeX by default. Open the arrow next to it to choose the main document, XeLaTeX, or LuaLaTeX. If the source or compiler settings change, compile again before exporting from the PDF toolbar. Build outputs stay outside the source folder until you export them.
 
-Open **Settings** to choose System, Light, or Dark appearance, change text size and indentation, and toggle line numbers or soft wrapping. Quire remembers these preferences. Drag the divider in **Split** view to resize the editor and preview. Opening a file adds a tab. Quire remembers each project's open tabs.
+Open **Settings** to search Appearance, Editor, Build, and Shortcuts. The editor supports two fonts, three line spacings, absolute or relative line numbers, soft wrapping, and configurable indentation. To change a shortcut, select the key combination next to its action in **Settings → Shortcuts** and press the replacement.
 
-Use **Quick open** to find a file or run a command by name. A leading `>` limits results to commands. **Focus mode** hides the sidebar and preview and restores your previous layout when you exit.
+Use **Quick Open** to switch projects, find recent files, or execute a command. Enter `>` for commands or `@` for the project outline. **Search Project** finds literal text across visible source files. Select a result to open the file and place the cursor on the match.
 
-Choose **Article**, **Lab report**, or **Coursework** when creating a project. The form fills the document title, author, and course. Use the plus button above the source editor to insert a section, an equation, or a table at your cursor.
+Drag tabs to reorder them. Use a tab’s context menu to pin it and **Reopen Closed Tab** to bring it back. Drop a folder from your file manager to open a project. Drop files to copy them in, or drag a project item onto a folder to move it. File moves can require updates to LaTeX references such as `\input`.
+
+Select a template preview when creating a project, then fill in the title, author, and course. Use the plus button above the source editor to insert a section, equation, or table. Use completion inside `\ref{}` or `\cite{}` to pick a key from the project. Hold Option or Alt and click a key to jump to its definition.
+
+Choose **Settings → Editor → Keymap → Vim** for modal editing and relative numbers if desired. `:w` saves, `:wq` saves and closes the tab, and `:bn` or `:bp` switches tabs. **Focus Mode** hides the sidebar and preview and restores the previous layout on exit.
+
+## Navigating the PDF
+
+Use the split-layout button in the PDF toolbar to switch between side-by-side and stacked panels, and drag the divider to resize them. Select a page number to jump to that page. Hold Command on macOS or Control on Linux and click in the source or compiled PDF to jump to the corresponding location. This uses the `synctex` command from your TeX distribution and requires a current build.
 
 Turn on **Compile automatically after edits** in Settings for a refreshed PDF after each pause in typing. If a build fails, your last successful PDF stays visible.
+
+Open **Build Issues** to see errors and warnings. Selecting a located problem takes you to its line. The **Log** tab contains the compiler output.
 
 If an external edit prevents saving, choose **Recover edits…** to save your draft to a separate file or discard it and use the disk version. You can also cancel and keep editing the draft.
 
@@ -18,6 +28,7 @@ If an external edit prevents saving, choose **Recover edits…** to save your dr
 | --- | --- | --- |
 | Compile | ⌘ Return | Ctrl Enter |
 | Find in file | ⌘ F | Ctrl F |
+| Search project | ⌘ Option F | Ctrl Alt F |
 | Settings | ⌘ , | Ctrl , |
 | Keyboard shortcuts | ⌘ / | Ctrl / |
 | Quick open | ⌘ K | Ctrl K |
@@ -27,10 +38,13 @@ If an external edit prevents saving, choose **Recover edits…** to save your dr
 | Open project folder | ⌘ O | Ctrl O |
 | Create a file | ⌘ N | Ctrl N |
 | Close tab | ⌘ W | Ctrl W |
+| Reopen closed tab | ⌘ Shift T | Ctrl Shift T |
 | Next or previous tab | Ctrl Tab or Ctrl Shift Tab | Ctrl Tab or Ctrl Shift Tab |
 | Source, Split, or PDF | ⌘ 1, 2, or 3 | Ctrl 1, 2, or 3 |
 | Toggle sidebar | ⌘ B | Ctrl B |
 | Save PDF | ⌘ Shift S | Ctrl Shift S |
+| Reveal source in PDF | ⌘ Option Return | Ctrl Alt Enter |
+| Build Issues | ⌘ Shift M | Ctrl Shift M |
 | Sync Overleaf | ⌘ Shift R | Ctrl Shift R |
 
 ## Connect an Overleaf project

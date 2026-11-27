@@ -6,7 +6,7 @@ A local-first LaTeX editor for macOS and Linux. Edit ordinary folders offline, p
 
 [Download Quire](https://github.com/WiaderekB/Quire/releases) · [User guide](docs/usage.md) · [What's new in 0.3.0](docs/releases/v0.3.0.md)
 
-![Quire in dark mode with a file tree, two LaTeX tabs, and a side-by-side PDF preview](docs/screenshots/workspace.png)
+![Quire in dark mode with Vim Normal mode, a project outline, two LaTeX tabs, and a side-by-side PDF preview](docs/screenshots/workspace.png)
 
 ## Download
 
@@ -22,16 +22,18 @@ Editing and autosave work offline. Install `latexmk` and the TeX packages your p
 
 ## Work in Quire
 
-- **Write.** Tabs retain undo history while you switch files. Use Quick Open with `⌘K` or `Ctrl+K` to find files and commands. Focus mode keeps the source in view.
-- **Compile.** Choose pdfLaTeX, XeLaTeX, or LuaLaTeX. Turn on automatic compilation in Settings to refresh the PDF after a pause in typing. The last successful PDF stays visible if compilation fails.
-- **Start a paper.** Use an article, lab report, or coursework template. Insert sections, equations, or tables with the plus button above the source.
+The features below describe the current source checkout. The download table links to the tagged 0.3.0 release.
+
+- **Write.** Choose Standard or Vim keybindings, search across the project, and complete LaTeX commands, labels, citations, and file paths. Pin, reorder, or reopen tabs. Quick Open finds files, recent projects, headings, and commands.
+- **Compile.** Choose pdfLaTeX, XeLaTeX, or LuaLaTeX. Jump directly from a build issue to the offending line. SyncTeX connects source and PDF in both directions, and automatic compilation keeps the preview current while you edit.
+- **Organize.** Preview an article, lab report, or coursework template before starting. Drag in files, move them between folders, or use the editor toolbar to insert a section, equation, or table.
 - **Sync.** Use **Connect Overleaf** with a project URL and a Git token. Your edits save to disk first and sync back to the original project. Overleaf Cloud requires Git access on the project. Self-hosted Overleaf requires Server Pro with Git Bridge. [Overleaf Git integration](https://docs.overleaf.com/integrations-and-add-ons/git-integration-and-github-synchronization/git-integration) · [Server Pro Git Bridge](https://docs.overleaf.com/on-premises/configuration/overleaf-toolkit/server-pro-only-configuration/git-integration)
 - **Connect an AI client.** Under **Settings → MCP for AI**, copy the local server configuration for a single project. The server requires Node.js 24 and provides read access by default. Enable source edits when you need them.
 
 <details>
 <summary>Appearance and editor settings</summary>
 
-![Quire Settings with appearance, indentation, line numbering, wrapping, and automatic compilation controls](docs/screenshots/settings.png)
+![Quire’s searchable Settings with Vim keymap, editor typography, and line-number controls](docs/screenshots/settings.png)
 
 </details>
 
