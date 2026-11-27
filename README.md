@@ -18,7 +18,7 @@ A local-first LaTeX editor for macOS and Linux. Edit ordinary folders offline, p
 
 Ready-to-upload packages are staged locally in `release/v0.4.0/`. Published builds are listed on GitHub Releases. [Build and release guide](docs/releasing.md)
 
-On macOS, open the DMG and drag Quire into Applications. The developer build may require approval on first launch. [macOS installation guide](https://github.com/WiaderekB/Quire/releases/tag/v0.4.0#install-on-macos)
+On macOS, open the DMG and drag Quire into Applications. The developer build may require approval on first launch. [macOS installation guide](https://github.com/WiaderekB/Quire/releases/tag/v0.4.0)
 
 Ubuntu 24.04 requires an AppArmor profile for the Chromium sandbox. [Linux installation guide](docs/install-linux.md)
 
