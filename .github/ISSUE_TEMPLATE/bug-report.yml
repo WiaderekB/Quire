@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a reproducible problem in Quire
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Quire version
+      placeholder: 0.3.0
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and architecture
+      placeholder: macOS on Apple Silicon or Ubuntu on x64
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include a minimal LaTeX example when it helps reproduce the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant build output or screenshots
+      description: For compilation issues, include the LaTeX engine and TeX distribution if available.
