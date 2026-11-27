@@ -34,7 +34,7 @@ gh release create "$tag" --repo WiaderekB/Quire --draft --verify-tag \
 
 ## Rebuild the packages
 
-Run `pnpm install --frozen-lockfile` and `pnpm test`. Build the universal DMG on macOS. The flags below produce an ad hoc signed developer build. Use Developer ID signing and notarization for public macOS distribution. [Electron Builder code signing](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/)
+Run `pnpm install --frozen-lockfile` and `pnpm test`. Build the universal DMG on macOS. The macOS command below produces an ad hoc signed developer build. Follow the notarization steps for a public DMG. [Electron Builder code signing](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/)
 
 ```sh
 version=$(node -p 'require("./package.json").version')
@@ -53,3 +53,20 @@ Verify the DMG and app signature, and inspect both Linux archives. Stage the thr
 shasum -a 256 ./*.dmg ./*.tar.gz > SHA256SUMS.txt
 shasum -a 256 -c SHA256SUMS.txt
 ```
+
+## Notarize the public macOS DMG
+
+Install the Apple Developer Program team's Developer ID Application certificate with its private key in the macOS keychain. Create the `quire` notary profile in Terminal. `notarytool` prompts for credentials and validates them before storing them in the keychain. [Developer ID certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates) · [Apple notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow) · [App-specific passwords](https://support.apple.com/en-us/102654)
+
+```sh
+security find-identity -v -p codesigning
+xcrun notarytool store-credentials quire
+```
+
+From the release source checkout with dependencies installed, run `bash scripts/notarize-dmg.sh`. Set `QUIRE_SIGNING_IDENTITY` to the certificate's SHA-1 fingerprint if multiple Developer ID Application identities are available. Set `QUIRE_NOTARY_PROFILE` to use a different keychain profile. For a tag that predates this script, run it by absolute path from that tag's checkout.
+
+The script builds a universal app with hardened runtime, signs the DMG, submits it to Apple, and attaches the accepted ticket. It prints the verified DMG path under `release/build/`. Review `notarization-log.json` and test the downloaded DMG with Gatekeeper before staging it alongside the Linux archives. Generate `SHA256SUMS.txt` after stapling the DMG.
+
+## Test a published Linux release
+
+Run **Verify Linux release** in GitHub Actions with the published tag. The workflow downloads the two archives, verifies their checksums, and launches each on a native Ubuntu 24.04 runner. It opens the bundled project and builds a PDF with the installed LaTeX tools. [Linux installation guide](install-linux.md)
