@@ -1,0 +1,69 @@
+name: Verify Linux release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag (for example, v0.4.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  launch:
+    name: Launch on Ubuntu 24.04 (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x64
+            machine: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            machine: aarch64
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Install display and LaTeX dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb xauth dbus-x11 libgtk-3-0t64 libnss3 libasound2t64 \
+            latexmk texlive-latex-base texlive-latex-recommended lmodern
+
+      - name: Download, verify, and launch the published archive
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          ARCH: ${{ matrix.arch }}
+          MACHINE: ${{ matrix.machine }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(uname -m)" = "$MACHINE"
+
+          bundle="Quire-${RELEASE_TAG#v}-linux-$ARCH"
+          archive="$bundle.tar.gz"
+          directory="$RUNNER_TEMP/quire-package"
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$archive" --pattern SHA256SUMS.txt --dir "$directory"
+          unset GH_TOKEN
+
+          cd "$directory"
+          awk -v name="$archive" '$2 == name' SHA256SUMS.txt | sha256sum --check --strict
+          tar -xzf "$archive"
+          file "$bundle/quire"
+          xvfb-run -a dbus-run-session -- node \
+            "$GITHUB_WORKSPACE/.github/scripts/smoke-linux-release.mjs" "$directory/$bundle/quire"
