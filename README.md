@@ -4,25 +4,25 @@
 
 A local-first LaTeX editor for macOS and Linux. Edit ordinary folders offline, preview your PDF beside the source, and sync changes back to the same Overleaf project when connected.
 
-[Download Quire](https://github.com/WiaderekB/Quire/releases) · [User guide](docs/usage.md) · [What's new in 0.3.0](docs/releases/v0.3.0.md)
+[GitHub Releases](https://github.com/WiaderekB/Quire/releases) · [User guide](docs/usage.md) · [What's new in 0.4.0](docs/releases/v0.4.0.md)
 
 ![Quire in dark mode with Vim Normal mode, a project outline, two LaTeX tabs, and a side-by-side PDF preview](docs/screenshots/workspace.png)
 
 ## Download
 
-| Platform | Package |
+| Platform | 0.4.0 package |
 | --- | --- |
-| macOS, Apple Silicon and Intel | [Universal DMG](https://github.com/WiaderekB/Quire/releases/download/v0.3.0/Quire-0.3.0-mac-universal.dmg) |
-| Linux, Intel and AMD | [x64 archive](https://github.com/WiaderekB/Quire/releases/download/v0.3.0/Quire-0.3.0-linux-x64.tar.gz) |
-| Linux, 64-bit ARM | [ARM64 archive](https://github.com/WiaderekB/Quire/releases/download/v0.3.0/Quire-0.3.0-linux-arm64.tar.gz) |
+| macOS, Apple Silicon and Intel | [Universal DMG](https://github.com/WiaderekB/Quire/releases/download/v0.4.0/Quire-0.4.0-mac-universal.dmg) |
+| Linux, Intel and AMD | [x64 archive](https://github.com/WiaderekB/Quire/releases/download/v0.4.0/Quire-0.4.0-linux-x64.tar.gz) |
+| Linux, 64-bit ARM | [ARM64 archive](https://github.com/WiaderekB/Quire/releases/download/v0.4.0/Quire-0.4.0-linux-arm64.tar.gz) |
 
-On macOS, open the DMG and drag Quire into Applications. The 0.3.0 DMG is an ad hoc signed developer build. On Linux, extract the archive and run the `quire` executable.
+Ready-to-upload packages are staged locally in `release/v0.4.0/`. Published builds are listed on GitHub Releases. [Build and release guide](docs/releasing.md)
+
+On macOS, open the DMG and drag Quire into Applications. The 0.4.0 DMG is an ad hoc signed developer build. On Linux, extract the archive and run the `quire` executable.
 
 Editing and autosave work offline. Install `latexmk` and the TeX packages your projects use to compile PDFs locally. Overleaf sync requires Git. [MacTeX](https://tug.org/mactex/) · [TeX Live](https://tug.org/texlive/)
 
 ## Work in Quire
-
-The features below describe the current source checkout. The download table links to the tagged 0.3.0 release.
 
 - **Write.** Choose Standard or Vim keybindings, search across the project, and complete LaTeX commands, labels, citations, and file paths. Pin, reorder, or reopen tabs. Quick Open finds files, recent projects, headings, and commands.
 - **Compile.** Choose pdfLaTeX, XeLaTeX, or LuaLaTeX. Jump directly from a build issue to the offending line. SyncTeX connects source and PDF in both directions, and automatic compilation keeps the preview current while you edit.

@@ -1,6 +1,6 @@
 {
   "name": "quire",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "A quiet, offline-first LaTeX editor for macOS and Linux.",
   "author": {
@@ -45,7 +45,7 @@
     "appId": "com.quire.editor",
     "productName": "Quire",
     "directories": {
-      "output": "release",
+      "output": "release/build",
       "buildResources": "assets"
     },
     "files": [
