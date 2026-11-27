@@ -73,13 +73,16 @@ export async function projectPath(root, relative, { newFile = false, editable = 
   return file;
 }
 
-export async function listFiles(root, prefix = "", withStamps = false) {
+export async function listFiles(root, prefix = "", withStamps = false, folders) {
   const entries = await readdir(path.join(root, prefix), { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
     if (!isVisibleName(entry.name)) continue;
     const relative = path.posix.join(prefix, entry.name);
-    if (entry.isDirectory()) files.push(...(await listFiles(root, relative, withStamps).catch(ignoreMissing) ?? []));
+    if (entry.isDirectory()) {
+      folders?.push(relative);
+      files.push(...(await listFiles(root, relative, withStamps, folders).catch(ignoreMissing) ?? []));
+    }
     if (entry.isFile()) {
       const file = { path: relative, editable: isEditable(relative) };
       if (withStamps) {
@@ -91,6 +94,13 @@ export async function listFiles(root, prefix = "", withStamps = false) {
     }
   }
   return files.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
+}
+
+export async function listWorkspace(root) {
+  const folders = [];
+  const files = await listFiles(root, "", true, folders);
+  folders.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return { files, folders };
 }
 
 function ignoreMissing(error) {

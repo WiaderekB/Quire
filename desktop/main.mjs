@@ -1,10 +1,14 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, net, protocol, safeStorage, shell } from "electron";
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { atomicWrite, createSource, listFiles, projectPath, readSource, saveSource, withProjectWrite } from "./files.mjs";
+import { atomicWrite, createSource, listFiles, listWorkspace, projectPath, readSource, saveSource, withProjectWrite } from "./files.mjs";
 import { compileProject } from "./latex.mjs";
+import { pdfToSource, sourceToPdf } from "./synctex.mjs";
+import { indexProject, searchSources } from "./project-navigation.mjs";
+import { importProjectFiles, moveProjectEntry, projectEntry, relocatePath, validProjectName } from "./project-files.mjs";
+import { resolveShortcut, validateShortcuts } from "./shortcuts.mjs";
 import { projectTemplate } from "./templates.mjs";
 import {
   cloneOverleaf, fetchOverleaf, integrateOverleaf, parseOverleafLink, pushOverleaf,
@@ -28,6 +32,7 @@ let requestedQuit = false;
 const temporaryTokens = new Map();
 const projectWrites = new Map();
 const previews = new Map();
+const symbolIndexes = new Map();
 
 app.setName("Quire");
 if (!app.isPackaged && process.env.QUIRE_DATA_DIR) app.setPath("userData", path.resolve(process.env.QUIRE_DATA_DIR));
@@ -70,14 +75,26 @@ function recentProjects() {
 }
 
 function preferences() {
-  const { appearance, editorSize, tabSize, lineNumbers, lineWrapping, autoCompile } = state.preferences ?? {};
+  const {
+    appearance, editorSize, tabSize, lineNumbers, lineNumberMode, lineWrapping, autoCompile,
+    compileDelay, vimMode, editorFont, lineHeight, autoCloseBrackets, activeLine, shortcuts,
+  } = state.preferences ?? {};
+  let custom = {};
+  try { custom = validateShortcuts(shortcuts ?? {}, isMac); } catch { /* Restore the defaults for invalid stored shortcuts. */ }
   return {
     appearance: appearances.includes(appearance) ? appearance : "system",
-    editorSize: Number.isInteger(editorSize) && editorSize >= 12 && editorSize <= 18 ? editorSize : 14,
-    tabSize: tabSize === 4 ? 4 : 2,
-    lineNumbers: lineNumbers !== false,
+    editorSize: Number.isInteger(editorSize) && editorSize >= 11 && editorSize <= 22 ? editorSize : 14,
+    tabSize: [2, 4, 8].includes(tabSize) ? tabSize : 2,
+    lineNumberMode: ["off", "absolute", "relative"].includes(lineNumberMode) ? lineNumberMode : lineNumbers === false ? "off" : "absolute",
     lineWrapping: lineWrapping !== false,
     autoCompile: autoCompile === true,
+    compileDelay: [600, 1000, 1600].includes(compileDelay) ? compileDelay : 1000,
+    vimMode: vimMode === true,
+    editorFont: editorFont === "system" ? "system" : "plex",
+    lineHeight: [1.4, 1.65, 1.85].includes(lineHeight) ? lineHeight : 1.65,
+    autoCloseBrackets: autoCloseBrackets !== false,
+    activeLine: activeLine !== false,
+    shortcuts: custom,
   };
 }
 
@@ -113,25 +130,27 @@ function currentPreview(project, preview, files) {
     preview.files.every((file, index) => file.path === files[index].path && file.stamp === files[index].stamp);
 }
 
-function describeWorkspace(project, files, includePreview = true) {
+function describeWorkspace(project, { files, folders }, includePreview = true) {
   const preview = previews.get(project.id);
   return {
-    project: publicProject(project), files, recent: recentProjects(), preview: includePreview ? preview?.bytes : undefined,
+    project: publicProject(project), files, folders, recent: recentProjects(), preview: includePreview ? preview?.bytes : undefined,
     previewStale: !!preview && !currentPreview(project, preview, files),
+    syncAvailable: !!preview?.mapping,
+    issues: includePreview ? preview?.issues : undefined,
   };
 }
 
 async function activate(project) {
-  const files = await listFiles(project.root, "", true);
-  checkMainDocument(project, files);
+  const entries = await listWorkspace(project.root);
+  checkMainDocument(project, entries.files);
   state.active = project.id;
   state.projects = [project, ...state.projects.filter(entry => entry.id !== project.id)];
   await saveState();
-  return describeWorkspace(project, files);
+  return describeWorkspace(project, entries);
 }
 
 async function samplePreview(project, files) {
-  const originals = await listFiles(example);
+  const originals = (await listFiles(example)).filter(file => file.path !== "preview.pdf");
   if (originals.length !== files.length ||
       !originals.every((file, index) => file.path === files[index].path)) return;
   try {
@@ -142,6 +161,29 @@ async function samplePreview(project, files) {
   } catch (error) {
     if (!["ENOENT", "EACCES"].includes(error.code)) throw error;
   }
+}
+
+async function openProjectFolder(directory) {
+  const root = await realpath(directory);
+  const existing = state.projects.find(project => project.root === root);
+  return activate(existing ?? { id: randomUUID(), name: path.basename(root), root, main: null, engine: "pdflatex" });
+}
+
+async function addProjectFiles(project, folder, paths) {
+  return serialize(project.id, () => withProjectWrite(project.root, async () => {
+    const result = await importProjectFiles(project.root, folder, paths);
+    return { ...result, workspace: await activate(project) };
+  }));
+}
+
+async function syncMapping(id) {
+  const project = getProject(id);
+  const preview = previews.get(id);
+  if (!preview?.mapping) throw new Error("Compile the project to enable jumps between source and PDF.");
+  if (!currentPreview(project, preview, await listFiles(project.root, "", true))) {
+    throw new Error("Compile the current version before jumping between source and PDF.");
+  }
+  return { project, mapping: preview.mapping, preview };
 }
 
 async function setToken(project, token) {
@@ -228,14 +270,19 @@ const actions = {
     }
   },
   async savePreferences(next) {
-    const { appearance, editorSize, tabSize, lineNumbers, lineWrapping, autoCompile } = next ?? {};
-    if (!appearances.includes(appearance) || !Number.isInteger(editorSize) || editorSize < 12 || editorSize > 18 ||
-        ![2, 4].includes(tabSize) || typeof lineNumbers !== "boolean" || typeof lineWrapping !== "boolean" ||
-        typeof autoCompile !== "boolean") {
+    const { appearance, editorSize, tabSize, lineNumberMode, lineWrapping, autoCompile, compileDelay,
+      vimMode, editorFont, lineHeight, autoCloseBrackets, activeLine, shortcuts } = next ?? {};
+    if (!appearances.includes(appearance) || !Number.isInteger(editorSize) || editorSize < 11 || editorSize > 22 ||
+        ![2, 4, 8].includes(tabSize) || !["off", "absolute", "relative"].includes(lineNumberMode) ||
+        ![600, 1000, 1600].includes(compileDelay) || !["plex", "system"].includes(editorFont) ||
+        ![1.4, 1.65, 1.85].includes(lineHeight) ||
+        [lineWrapping, autoCompile, vimMode, autoCloseBrackets, activeLine].some(value => typeof value !== "boolean")) {
       throw new Error("Choose valid appearance and editor settings.");
     }
     const previous = state.preferences;
-    state.preferences = { appearance, editorSize, tabSize, lineNumbers, lineWrapping, autoCompile };
+    const custom = validateShortcuts(shortcuts, isMac);
+    state.preferences = { appearance, editorSize, tabSize, lineNumberMode, lineWrapping, autoCompile, compileDelay,
+      vimMode, editorFont, lineHeight, autoCloseBrackets, activeLine, shortcuts: custom };
     try {
       await saveState();
     } catch (error) {
@@ -243,7 +290,11 @@ const actions = {
       throw error;
     }
     nativeTheme.themeSource = appearance;
+    configureMenu();
     return preferences();
+  },
+  captureShortcuts(active) {
+    window?.webContents.setIgnoreMenuShortcuts(active === true);
   },
   copyMcpConfig(id, write) {
     const project = getProject(id);
@@ -257,11 +308,7 @@ const actions = {
   async openFolder() {
     const result = await dialog.showOpenDialog(window, { title: "Open a LaTeX project", properties: ["openDirectory"] });
     if (result.canceled) return null;
-    const root = await realpath(result.filePaths[0]);
-    const existing = state.projects.find(project => project.root === root);
-    return activate(existing ?? {
-      id: randomUUID(), name: path.basename(root), root, main: null, engine: "pdflatex",
-    });
+    return openProjectFolder(result.filePaths[0]);
   },
   selectProject(id) {
     return activate(getProject(id));
@@ -327,11 +374,22 @@ const actions = {
   },
   async refresh(id) {
     const project = getProject(id);
-    const files = await listFiles(project.root, "", true);
+    const entries = await listWorkspace(project.root);
     const previous = project.main;
-    checkMainDocument(project, files);
+    checkMainDocument(project, entries.files);
     if (project.main !== previous) await saveState();
-    return describeWorkspace(project, files, false);
+    return describeWorkspace(project, entries, false);
+  },
+  searchProject(id, query, options) {
+    return searchSources(getProject(id).root, query, options);
+  },
+  projectSymbols(id) {
+    const { root, main } = getProject(id);
+    let entry = symbolIndexes.get(id);
+    if (!entry) symbolIndexes.set(id, entry = { cache: new Map(), pending: Promise.resolve() });
+    const update = entry.pending.catch(() => {}).then(() => indexProject(root, main, entry.cache));
+    entry.pending = update;
+    return update;
   },
   async read(id, relative) {
     const file = await projectPath(getProject(id).root, relative, { editable: true });
@@ -374,6 +432,59 @@ const actions = {
       return activate(project);
     });
   },
+  createFolder(id, parent, name) {
+    const project = getProject(id);
+    if (!validProjectName(name)) throw new Error("Enter a valid folder name.");
+    return serialize(id, () => withProjectWrite(project.root, async () => {
+      const { file } = await projectEntry(project.root, parent, true);
+      await mkdir(path.join(file, name)).catch(error => {
+        if (error.code === "EEXIST") throw new Error("A file or folder with that name already exists here.");
+        throw error;
+      });
+      return activate(project);
+    }));
+  },
+  moveEntry(id, from, to) {
+    const project = getProject(id);
+    return serialize(id, () => withProjectWrite(project.root, async () => {
+      await moveProjectEntry(project.root, from, to);
+      project.main = relocatePath(project.main, from, to);
+      return activate(project);
+    }));
+  },
+  async trashEntry(id, relative) {
+    const project = getProject(id);
+    const choice = await dialog.showMessageBox(window, {
+      type: "warning", title: "Move to Trash", message: `Move “${path.basename(relative)}” to Trash?`,
+      detail: project.connection ? "After synchronization, this item will also be removed from the Overleaf project." : "",
+      buttons: ["Cancel", "Move to Trash"], defaultId: 0, cancelId: 0, noLink: true,
+    });
+    if (choice.response !== 1) return null;
+    return serialize(id, () => withProjectWrite(project.root, async () => {
+      const { file } = await projectEntry(project.root, relative);
+      await shell.trashItem(file);
+      return activate(project);
+    }));
+  },
+  async importFiles(id, folder) {
+    const project = getProject(id);
+    const result = await dialog.showOpenDialog(window, { title: "Import files into the project", properties: ["openFile", "multiSelections"] });
+    if (result.canceled) return null;
+    return addProjectFiles(project, folder, result.filePaths);
+  },
+  async dropFiles(id, folder, paths) {
+    if (!Array.isArray(paths) || paths.length === 0 || paths.length > 100 ||
+        paths.some(file => typeof file !== "string" || !path.isAbsolute(file))) return null;
+    if (paths.length === 1) {
+      const info = await lstat(paths[0]);
+      if (info.isDirectory()) return { kind: "project", workspace: await openProjectFolder(paths[0]) };
+      if (!id && info.isFile() && /\.tex$/i.test(paths[0])) {
+        return { kind: "project", workspace: await openProjectFolder(path.dirname(paths[0])), openFile: path.basename(paths[0]) };
+      }
+    }
+    if (!id) throw new Error("Open a project to import files into it.");
+    return { kind: "import", ...await addProjectFiles(getProject(id), folder, paths) };
+  },
   async configureBuild(id, relative, engine) {
     const project = getProject(id);
     await projectPath(project.root, relative, { editable: true });
@@ -408,11 +519,24 @@ const actions = {
     const { root, main, engine } = project;
     if (!main) throw new Error("Add a .tex file to build this project.");
     const files = await listFiles(root, "", true);
-    const result = await compileProject(root, main, engine);
-    if (result.ok) {
-      previews.set(id, { bytes: result.bytes, name: result.name, main, engine, files });
-    }
-    return result;
+    const { mapping, ...result } = await compileProject(root, main, engine);
+    if (result.ok) previews.set(id, { bytes: result.bytes, name: result.name, main, engine, files, mapping, issues: result.issues });
+    return { ...result, syncAvailable: !!mapping };
+  },
+  async syncToPdf(id, relative, line, column) {
+    if (!Number.isInteger(line) || line < 1 || !Number.isInteger(column) || column < 1) return null;
+    const { project, mapping, preview } = await syncMapping(id);
+    await projectPath(project.root, relative, { editable: true });
+    const location = await sourceToPdf(mapping, relative, line, column);
+    return previews.get(id) === preview ? location : null;
+  },
+  async syncToSource(id, page, x, y) {
+    if (!Number.isInteger(page) || page < 1 || !Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0) return null;
+    const { project, mapping, preview } = await syncMapping(id);
+    const location = await pdfToSource(mapping, page, x, y);
+    if (!location || previews.get(id) !== preview) return null;
+    await projectPath(project.root, location.path, { editable: true });
+    return location;
   },
   async exportPdf(id) {
     const project = getProject(id);
@@ -443,13 +567,14 @@ const actions = {
 };
 
 function configureMenu() {
-  function command(label, accelerator, name) {
-    return { label, accelerator, click: () => window?.webContents.send("quire:command", name) };
+  const custom = preferences().shortcuts;
+  function command(label, name) {
+    return { label, accelerator: resolveShortcut(name, custom), click: () => window?.webContents.send("quire:command", name) };
   }
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     ...(isMac ? [{ label: "Quire", submenu: [
       { role: "about" },
-      command("Settings…", "CmdOrCtrl+,", "settings"),
+      command("Settings…", "settings"),
       { type: "separator" },
       { role: "services" },
       { type: "separator" },
@@ -457,36 +582,41 @@ function configureMenu() {
       { type: "separator" }, { role: "quit" },
     ] }] : []),
     { label: "File", submenu: [
-      command("New Project…", "CmdOrCtrl+Shift+N", "new"),
-      command("Open Folder…", "CmdOrCtrl+O", "open"),
-      command("New File…", "CmdOrCtrl+N", "new-file"),
+      command("New Project…", "new"),
+      command("Open Folder…", "open"),
+      command("New File…", "new-file"),
+      command("Import Files…", "import"),
       { type: "separator" },
-      command("Save", "CmdOrCtrl+S", "save"),
-      command("Save PDF…", "CmdOrCtrl+Shift+S", "export"),
-      command("Build", "CmdOrCtrl+Enter", "build"),
-      command("Find in File…", "CmdOrCtrl+F", "find"),
-      command("Quick Open…", "CmdOrCtrl+K", "quick-open"),
-      command("Go to Line…", "CmdOrCtrl+L", "goto-line"),
-      command("Insert LaTeX Block…", "CmdOrCtrl+Shift+I", "insert-block"),
-      command("Sync Overleaf", "CmdOrCtrl+Shift+R", "sync"),
-      ...(isMac ? [] : [command("Settings…", "CmdOrCtrl+,", "settings")]),
+      command("Save", "save"),
+      command("Save PDF…", "export"),
+      command("Build", "build"),
+      command("Find in File…", "find"),
+      command("Search Project…", "project-search"),
+      command("Quick Open…", "quick-open"),
+      command("Go to Line…", "goto-line"),
+      command("Insert LaTeX Block…", "insert-block"),
+      command("Reveal Source in PDF", "reveal-pdf"),
+      command("Sync Overleaf", "sync"),
+      ...(isMac ? [] : [command("Settings…", "settings")]),
       { type: "separator" },
-      command("Close Tab", "CmdOrCtrl+W", "close-tab"),
+      command("Close Tab", "close-tab"),
+      command("Reopen Closed Tab", "reopen-tab"),
       { role: "close", label: "Close Window", accelerator: "CmdOrCtrl+Shift+W" },
     ] },
     { role: "editMenu" },
     { label: "View", submenu: [
-      command("Source", "CmdOrCtrl+1", "source-view"),
-      command("Split", "CmdOrCtrl+2", "split-view"),
-      command("PDF", "CmdOrCtrl+3", "pdf-view"),
-      command("Toggle Sidebar", "CmdOrCtrl+B", "toggle-sidebar"),
-      command("Focus Mode", "CmdOrCtrl+Shift+F", "focus-mode"),
+      command("Source", "source-view"),
+      command("Split", "split-view"),
+      command("PDF", "pdf-view"),
+      command("Toggle Sidebar", "toggle-sidebar"),
+      command("Focus Mode", "focus-mode"),
       { type: "separator" },
-      command("Previous Tab", "Ctrl+Shift+Tab", "previous-tab"),
-      command("Next Tab", "Ctrl+Tab", "next-tab"),
+      command("Previous Tab", "previous-tab"),
+      command("Next Tab", "next-tab"),
       { type: "separator" },
-      command("Fit PDF Page", "CmdOrCtrl+0", "pdf-fit"),
-      command("Keyboard Shortcuts", "CmdOrCtrl+/", "shortcuts"),
+      command("Fit PDF Page", "pdf-fit"),
+      command("Build Issues", "issues"),
+      command("Keyboard Shortcuts", "shortcuts"),
     ] },
     { role: "windowMenu" },
   ]));

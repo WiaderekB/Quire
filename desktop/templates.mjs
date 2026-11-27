@@ -5,9 +5,9 @@ const layouts = {
 };
 
 export const templates = [
-  { id: "article", label: "Article" },
-  { id: "lab-report", label: "Lab report" },
-  { id: "coursework", label: "Coursework" },
+  { id: "article", label: "Article", sections: layouts.article },
+  { id: "lab-report", label: "Lab report", sections: layouts["lab-report"] },
+  { id: "coursework", label: "Coursework", sections: layouts.coursework },
 ];
 
 export function texText(text) {

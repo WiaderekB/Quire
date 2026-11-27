@@ -24,6 +24,9 @@ importers:
       '@codemirror/legacy-modes':
         specifier: ^6.5.0
         version: 6.5.5
+      '@codemirror/lint':
+        specifier: ^6.9.8
+        version: 6.9.8
       '@codemirror/search':
         specifier: ^6.6.0
         version: 6.7.3
@@ -45,6 +48,9 @@ importers:
       '@modelcontextprotocol/server':
         specifier: ^2.4.0
         version: 2.4.0
+      '@replit/codemirror-vim':
+        specifier: ^6.4.0
+        version: 6.4.0(@codemirror/commands@6.11.2)(@codemirror/language@6.13.1)(@codemirror/search@6.7.3)(@codemirror/state@6.7.6)(@codemirror/view@6.44.0)
       electron:
         specifier: ^45.5.0
         version: 45.5.0(supports-color@7.2.0)
@@ -80,6 +86,9 @@ packages:
 
   '@codemirror/legacy-modes@6.5.5':
     resolution: {integrity: sha512-9ltT214oMb3Y1w5eAZMSigzrjzZnMI2Wa3Feq73rU/i4C56MkwrpfswfQYOr28C5pXr6dWwspNTMyeHXlzWMxg==}
+
+  '@codemirror/lint@6.9.8':
+    resolution: {integrity: sha512-qNvtcE73xUto/D1RvtgSRI4A1Hg8ekxlvtZpjHpdpisLBnhyu82EUEJMEgaxkjuQCA8vqnrylENWKOsEDCOHcw==}
 
   '@codemirror/search@6.7.3':
     resolution: {integrity: sha512-pD3bONMUhzkg4+cTpk3mkh3UAveJbZ5fhqPlRhYsP7mgBPEGhyy+8aUvy7Nggsc8MlZMkS1SKGzC7iFGh4YkUw==}
@@ -291,6 +300,18 @@ packages:
   '@peculiar/webcrypto@1.7.2':
     resolution: {integrity: sha512-ktTSACRJ5WdpfjHjFT2EWJQQPacGv1cPCDfEbdmpAHOxdFiYqPe4lfnXGA3D8Dg9/0kHPYSvyRlgujIOVlTdvQ==}
     engines: {node: '>=14.18.0'}
+
+  '@replit/codemirror-vim-core@0.1.0':
+    resolution: {integrity: sha512-1i6EBKpcNfDKvTmTh6N6g9lL6udD5t+uFNh4JCqozRnVlvUGOps7h/QzS2ne4zcvPUjvApKpmcP7Grc3fNbZiQ==}
+
+  '@replit/codemirror-vim@6.4.0':
+    resolution: {integrity: sha512-t9UMDNhkmeAkl0uRbiJVotv97bGD6mf4GyJJoEbrjUqa/Pov0s9eL+4AaI0Xto3OGri17i9qwIpT0JbVlVXt8A==}
+    peerDependencies:
+      '@codemirror/commands': 6.x.x
+      '@codemirror/language': 6.x.x
+      '@codemirror/search': 6.x.x
+      '@codemirror/state': 6.x.x
+      '@codemirror/view': 6.x.x
 
   '@rolldown/binding-android-arm-eabi@1.3.3':
     resolution: {integrity: sha512-K1itOg1Xl50XyjLDa4qQZqaYsfiQbFbFRWXOEOupOsGr3whhm5ed4lgySd6Inohv2TB0+sdU4AxORKuS/TGang==}
@@ -1560,6 +1581,12 @@ snapshots:
     dependencies:
       '@codemirror/streamparser': 6.0.0
 
+  '@codemirror/lint@6.9.8':
+    dependencies:
+      '@codemirror/state': 6.7.6
+      '@codemirror/view': 6.44.0
+      crelt: 1.0.7
+
   '@codemirror/search@6.7.3':
     dependencies:
       '@codemirror/state': 6.7.6
@@ -1821,6 +1848,17 @@ snapshots:
       '@peculiar/utils': 2.0.3
       tslib: 2.9.1
       webcrypto-core: 1.9.2
+
+  '@replit/codemirror-vim-core@0.1.0': {}
+
+  '@replit/codemirror-vim@6.4.0(@codemirror/commands@6.11.2)(@codemirror/language@6.13.1)(@codemirror/search@6.7.3)(@codemirror/state@6.7.6)(@codemirror/view@6.44.0)':
+    dependencies:
+      '@codemirror/commands': 6.11.2
+      '@codemirror/language': 6.13.1
+      '@codemirror/search': 6.7.3
+      '@codemirror/state': 6.7.6
+      '@codemirror/view': 6.44.0
+      '@replit/codemirror-vim-core': 0.1.0
 
   '@rolldown/binding-android-arm-eabi@1.3.3':
     optional: true

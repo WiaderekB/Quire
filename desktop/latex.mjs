@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
-import { cp, lstat, mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, lstat, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { projectPath } from "./files.mjs";
+import { buildDiagnostics } from "./diagnostics.mjs";
+import { texEnvironment } from "./synctex.mjs";
 
 const modes = {
   pdflatex: ["-pdf", "-pdflatex=pdflatex -no-shell-escape %O %S"],
@@ -12,16 +14,15 @@ const modes = {
 
 function runLatex(cwd, file, engine, cache) {
   return new Promise((resolve, reject) => {
-    const toolPath = [process.env.PATH, "/Library/TeX/texbin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].filter(Boolean);
     const args = [
       "-norc", "-interaction=nonstopmode", "-halt-on-error", "-file-line-error",
-      "-outdir=.quire-output", ...modes[engine], `./${file}`,
+      "-synctex=1", "-outdir=.quire-output", ...modes[engine], `./${file}`,
     ];
     const child = spawn("latexmk", args, {
       cwd,
       detached: true,
       env: {
-        ...process.env, PATH: toolPath.join(":"), TEXMFCACHE: cache,
+        ...texEnvironment(), TEXMFCACHE: cache,
         openin_any: "p", openout_any: "p",
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -65,7 +66,7 @@ export async function compileProject(root, file, engine) {
   await projectPath(root, file, { editable: true });
   const staging = await mkdtemp(path.join(os.tmpdir(), "quire-latex-"));
   try {
-    const project = path.join(staging, "project");
+    const project = path.join(await realpath(staging), "project");
     await cp(root, project, {
       recursive: true,
       async filter(source) {
@@ -79,13 +80,22 @@ export async function compileProject(root, file, engine) {
     // LuaTeX needs a writable relative cache when TeX's file restrictions are enabled.
     const cache = path.basename(await mkdtemp(path.join(project, "quire-tex-cache-")));
     const result = await runLatex(project, file, engine, cache);
-    if (!result.ok) return result;
+    const issues = buildDiagnostics(result.log, project, file, result.ok);
+    if (!result.ok) {
+      if (!issues.some(issue => issue.severity === "error")) {
+        issues.unshift({ severity: "error", path: file, line: null, message: result.message });
+      }
+      return { ...result, issues };
+    }
     const name = path.basename(file, path.extname(file));
+    const output = path.join(project, ".quire-output", name);
     try {
-      const bytes = await readFile(path.join(project, ".quire-output", `${name}.pdf`));
-      return { ...result, bytes: new Uint8Array(bytes), name: `${name}.pdf` };
+      const bytes = await readFile(output + ".pdf");
+      const map = await readFile(output + ".synctex.gz").catch(() => null);
+      return { ...result, bytes: new Uint8Array(bytes), name: `${name}.pdf`, issues, mapping: map ? { root: project, bytes: map } : null };
     } catch {
-      return { ok: false, message: "LaTeX completed without creating a PDF.", log: result.log };
+      const message = "LaTeX completed without creating a PDF.";
+      return { ok: false, message, log: result.log, issues: [{ severity: "error", message, path: file, line: null }] };
     }
   } finally {
     await rm(staging, { recursive: true, force: true });
