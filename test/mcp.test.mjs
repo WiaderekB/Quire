@@ -51,4 +51,20 @@ test("MCP limits reads to one project and protects revisions before writing", as
   assert.ok(result.structuredContent.version);
   assert.match(await readFile(tex, "utf8"), /A revised draft/);
   assert.equal((await call(writer, "replace_project_text", edit)).isError, true);
+
+  const secondWriter = await connect(true);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    await writeFile(tex, "Shared draft.\n" + "% Padding for concurrent reads.\n".repeat(35_000));
+    const { version } = (await call(reader, "read_project_file", {
+      path: "main.tex", lineCount: 1,
+    })).structuredContent;
+    const replacements = ["First writer.", "Second writer."];
+    const results = await Promise.all([writer, secondWriter].map((client, index) =>
+      call(client, "replace_project_text", { path: "main.tex", version, oldText: "Shared draft.", newText: replacements[index] }),
+    ));
+    assert.equal(results.filter(result => result.structuredContent?.version).length, 1);
+    assert.equal(results.filter(result => result.isError).length, 1);
+    const winner = results.findIndex(result => result.structuredContent?.version);
+    assert.ok((await readFile(tex, "utf8")).startsWith(replacements[winner]));
+  }
 });

@@ -2,7 +2,7 @@
 
 ## Working in the editor
 
-**Compile** uses pdfLaTeX by default. Open the arrow next to it to choose the main document, XeLaTeX, or LuaLaTeX. The PDF toolbar saves a copy of the latest successful build. Build outputs stay outside the source folder until you export them.
+**Compile** uses pdfLaTeX by default. Open the arrow next to it to choose the main document, XeLaTeX, or LuaLaTeX. If the source or compiler settings change, compile again before exporting from the PDF toolbar. Build outputs stay outside the source folder until you export them.
 
 Open **Settings** to choose System, Light, or Dark appearance, change text size and indentation, and toggle line numbers or soft wrapping. Quire remembers these preferences. Drag the divider in **Split** view to resize the editor and preview. Opening a file adds a tab. Quire remembers each project's open tabs.
 
@@ -11,6 +11,8 @@ Use **Quick open** to find a file or run a command by name. A leading `>` limits
 Choose **Article**, **Lab report**, or **Coursework** when creating a project. The form fills the document title, author, and course. Use the plus button above the source editor to insert a section, an equation, or a table at your cursor.
 
 Turn on **Compile automatically after edits** in Settings for a refreshed PDF after each pause in typing. If a build fails, your last successful PDF stays visible.
+
+If an external edit prevents saving, choose **Recover edits…** to save your draft to a separate file or discard it and use the disk version. You can also cancel and keep editing the draft.
 
 | Action | macOS | Linux |
 | --- | --- | --- |
@@ -40,6 +42,8 @@ Turn on **Compile automatically after edits** in Settings for a refreshed PDF af
 Git is required for Overleaf connections. Overleaf Cloud requires premium Git access. A self-hosted Overleaf Server Pro installation needs Git Bridge enabled. The connection uses the original project and supports both current and legacy default branch names. [Overleaf Git integration](https://docs.overleaf.com/integrations-and-add-ons/git-integration-and-github-synchronization/git-integration), [authentication tokens](https://docs.overleaf.com/integrations-and-add-ons/git-integration-and-github-synchronization/git-integration/git-integration-authentication-tokens), [Server Pro Git Bridge](https://docs.overleaf.com/on-premises/configuration/overleaf-toolkit/server-pro-only-configuration/git-integration).
 
 Quire keeps editing and saving to disk when Overleaf is unreachable. If edits overlap, Quire stops the sync with both versions preserved. Use **Show project folder** in the project menu to open the clone and resolve the conflict with Git before retrying sync. Quire uses the system keyring for persistent token storage when available. In other sessions, enter the token again in **Connection settings**.
+
+Automatic sync retries temporary connection failures. It syncs changes to already tracked files and adds visible project files that Git does not ignore. New hidden files, generated LaTeX files, and symbolic links stay local. Project configuration files such as `.gitignore` and `.latexmkrc` can be added.
 
 Quire's own hosted service is planned for a later version.
 

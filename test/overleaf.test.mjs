@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import https from "node:https";
 import os from "node:os";
 import path from "node:path";
@@ -74,12 +74,19 @@ test("an authenticated Overleaf sync publishes both sides and preserves overlaps
   await git(bare, "config", "http.receivepack", "true");
   await git(root, "clone", bare, author);
   await source(author, "First paragraph.\n\nA middle paragraph.\n\nLast paragraph.\n");
+  await writeFile(path.join(author, "old.tex"), "Chapter to remove.\n");
+  await writeFile(path.join(author, ".tracked-config"), "Old value.\n");
   await git(author, "add", ".");
   await git(author, "commit", "-m", "Create draft");
   await git(author, "push");
 
   const handle = serveGit(root, token);
+  let outage = 0;
   const server = https.createServer({ key: await readFile(key), cert: await readFile(cert) }, (request, response) => {
+    if (outage) {
+      response.writeHead(outage).end();
+      return;
+    }
     void handle(request).then(({ status, headers, body }) => {
       response.writeHead(status, headers).end(body);
     }).catch(error => response.writeHead(500).end(error.message));
@@ -92,9 +99,27 @@ test("an authenticated Overleaf sync publishes both sides and preserves overlaps
   process.env.GIT_SSL_CAINFO = cert;
 
   const connection = parseOverleafLink(`https://127.0.0.1:${server.address().port}/project/123abc`);
-  await assert.rejects(cloneOverleaf(root, local, connection.url, "bad-token"), /denied access/);
+  await assert.rejects(cloneOverleaf(root, local, connection.url, "bad-token"),
+    error => /denied access/.test(error.message) && error.code !== "SYNC_RETRY");
   connection.branch = await cloneOverleaf(root, local, connection.url, token);
   assert.equal(connection.branch, "master");
+  for (const status of [429, 503]) {
+    outage = status;
+    await assert.rejects(fetchOverleaf(local, connection, token), { code: "SYNC_RETRY" });
+  }
+  outage = 0;
+
+  const excluded = [".local-only.txt", ".temp/notes.tex", "main.aux", "node_modules/confidential.txt", "linked.tex", "ignored.tex"];
+  await mkdir(path.join(local, ".temp"));
+  await mkdir(path.join(local, "node_modules"));
+  await writeFile(path.join(local, ".gitignore"), "ignored.tex\n");
+  await writeFile(path.join(local, ".tracked-config"), "New value.\n");
+  await rm(path.join(local, "old.tex"));
+  for (const name of excluded.filter(name => name !== "linked.tex")) {
+    await writeFile(path.join(local, name), "Keep local.\n");
+  }
+  await symlink("main.tex", path.join(local, "linked.tex"));
+  await writeFile(path.join(local, "results [trial].tex"), "Add this source.\n");
 
   const change = async (cwd, previous, next) =>
     source(cwd, (await readFile(path.join(cwd, "main.tex"), "utf8")).replace(previous, next));
@@ -109,6 +134,14 @@ test("an authenticated Overleaf sync publishes both sides and preserves overlaps
   const pushed = await git(bare, "show", "master:main.tex");
   assert.match(pushed, /Quire’s first paragraph/);
   assert.match(pushed, /Coauthor’s last paragraph/);
+  const remoteFiles = (await git(bare, "ls-tree", "-r", "--name-only", "master")).trim().split("\n");
+  assert.deepEqual(remoteFiles, [".gitignore", ".tracked-config", "main.tex", "results [trial].tex"]);
+  assert.equal(await git(bare, "show", "master:.tracked-config"), "New value.\n");
+  assert.equal(await readFile(path.join(local, ".local-only.txt"), "utf8"), "Keep local.\n");
+
+  await git(local, "add", ".local-only.txt");
+  await assert.rejects(integrateOverleaf(local, connection), /include hidden or generated/);
+  await git(local, "restore", "--staged", ".local-only.txt");
 
   await git(author, "pull", "--ff-only");
   await change(local, "Quire’s first paragraph.", "Second Quire draft.");
@@ -119,5 +152,5 @@ test("an authenticated Overleaf sync publishes both sides and preserves overlaps
   assert.deepEqual(await integrateOverleaf(local, connection), { conflicts: ["main.tex"], changed: false, needsPush: false });
   assert.match(await readFile(path.join(local, "main.tex"), "utf8"), /Second Quire draft/);
   assert.match(await git(bare, "show", "master:main.tex"), /Overlapping cloud draft/);
-  assert.equal(await git(local, "status", "--porcelain"), "");
+  assert.equal(await git(local, "status", "--porcelain", "--untracked-files=no"), "");
 });

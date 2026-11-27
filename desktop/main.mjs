@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { cp, mkdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { atomicWrite, createSource, listFiles, projectPath, readSource, saveSource } from "./files.mjs";
+import { atomicWrite, createSource, listFiles, projectPath, readSource, saveSource, withProjectWrite } from "./files.mjs";
 import { compileProject } from "./latex.mjs";
 import { projectTemplate } from "./templates.mjs";
 import {
@@ -100,18 +100,48 @@ function optionalMetadata(value) {
   return value.trim();
 }
 
-async function activate(project) {
-  const files = await listFiles(project.root);
+function checkMainDocument(project, files) {
   if (!files.some(file => file.path === project.main)) {
     project.main = files.find(file => file.path === "main.tex")?.path ??
       files.find(file => file.path.toLowerCase().endsWith(".tex"))?.path ?? null;
   }
+}
+
+function currentPreview(project, preview, files) {
+  return !!preview && preview.main === project.main && preview.engine === project.engine &&
+    preview.files.length === files.length &&
+    preview.files.every((file, index) => file.path === files[index].path && file.stamp === files[index].stamp);
+}
+
+function describeWorkspace(project, files, includePreview = true) {
+  const preview = previews.get(project.id);
+  return {
+    project: publicProject(project), files, recent: recentProjects(), preview: includePreview ? preview?.bytes : undefined,
+    previewStale: !!preview && !currentPreview(project, preview, files),
+  };
+}
+
+async function activate(project) {
+  const files = await listFiles(project.root, "", true);
+  checkMainDocument(project, files);
   state.active = project.id;
   state.projects = [project, ...state.projects.filter(entry => entry.id !== project.id)];
   await saveState();
-  return {
-    project: publicProject(project), files, recent: recentProjects(), preview: previews.get(project.id)?.bytes,
-  };
+  return describeWorkspace(project, files);
+}
+
+async function samplePreview(project, files) {
+  const originals = await listFiles(example);
+  if (originals.length !== files.length ||
+      !originals.every((file, index) => file.path === files[index].path)) return;
+  try {
+    const unchanged = (await Promise.all(files.map(async ({ path: relative }) =>
+      (await readFile(path.join(project.root, relative))).equals(await readFile(path.join(example, relative))),
+    ))).every(Boolean);
+    if (unchanged) return new Uint8Array(await readFile(path.join(example, "preview.pdf")));
+  } catch (error) {
+    if (!["ENOENT", "EACCES"].includes(error.code)) throw error;
+  }
 }
 
 async function setToken(project, token) {
@@ -182,14 +212,10 @@ const actions = {
     try {
       const workspace = await activate(project);
       workspace.preferences = preferences();
-      if (project.id === "field-notes" && project.main === "main.tex") {
-        const files = await listFiles(project.root);
-        const unchanged = files.length === 3 && (await Promise.all(files.map(async file =>
-          (await readFile(path.join(project.root, file.path))).equals(await readFile(path.join(example, file.path))),
-        ))).every(Boolean);
-        if (unchanged) {
-          const bytes = new Uint8Array(await readFile(path.join(example, "preview.pdf")));
-          previews.set(project.id, { bytes, name: "field-notes.pdf" });
+      if (!workspace.preview && project.id === "field-notes" && project.main === "main.tex" && project.engine === "pdflatex") {
+        const bytes = await samplePreview(project, workspace.files);
+        if (bytes) {
+          previews.set(project.id, { bytes, name: "field-notes.pdf", main: project.main, engine: project.engine, files: workspace.files });
           workspace.preview = bytes;
         }
       }
@@ -300,7 +326,12 @@ const actions = {
     await shell.openExternal(connectionFor(id).connection.web);
   },
   async refresh(id) {
-    return activate(getProject(id));
+    const project = getProject(id);
+    const files = await listFiles(project.root, "", true);
+    const previous = project.main;
+    checkMainDocument(project, files);
+    if (project.main !== previous) await saveState();
+    return describeWorkspace(project, files, false);
   },
   async read(id, relative) {
     const file = await projectPath(getProject(id).root, relative, { editable: true });
@@ -308,14 +339,38 @@ const actions = {
   },
   save(id, relative, contents, version) {
     return serialize(id, async () => {
-      const file = await projectPath(getProject(id).root, relative, { editable: true });
-      return saveSource(file, contents, version);
+      const { root } = getProject(id);
+      const file = await projectPath(root, relative, { editable: true });
+      return saveSource(file, contents, version, root);
     });
+  },
+  async recoverSource(id, relative, contents, reason) {
+    const project = getProject(id);
+    const name = path.basename(relative);
+    const choice = await dialog.showMessageBox(window, {
+      type: "warning", title: "Unsaved changes", message: `Changes to ${name} could not be saved.`,
+      detail: `${reason}\n\nSave your edits to a separate file, or discard them and keep the version on disk.`,
+      buttons: ["Save a copy…", "Discard edits", "Cancel"], defaultId: 0, cancelId: 2, noLink: true,
+    });
+    if (choice.response !== 0) return choice.response === 1;
+    const ext = path.extname(name);
+    const result = await dialog.showSaveDialog(window, {
+      title: "Save a copy of your edits",
+      defaultPath: path.join(app.getPath("documents"), `${path.basename(name, ext)} recovered${ext}`),
+    });
+    if (result.canceled) return false;
+    const destination = path.join(await realpath(path.dirname(result.filePath)), path.basename(result.filePath));
+    const original = path.join(project.root, relative);
+    if (destination === original || await realpath(destination).catch(() => null) === original) {
+      throw new Error("Choose a different file for the recovered copy.");
+    }
+    await atomicWrite(destination, contents);
+    return true;
   },
   createFile(id, relative) {
     return serialize(id, async () => {
       const project = getProject(id);
-      await createSource(project.root, relative);
+      await withProjectWrite(project.root, () => createSource(project.root, relative));
       return activate(project);
     });
   },
@@ -325,9 +380,15 @@ const actions = {
     if (!relative.toLowerCase().endsWith(".tex") || !engines.includes(engine)) {
       throw new Error("Choose a TeX main document and a LaTeX engine.");
     }
+    const previous = { main: project.main, engine: project.engine };
     project.main = relative;
     project.engine = engine;
-    await saveState();
+    try {
+      await saveState();
+    } catch (error) {
+      Object.assign(project, previous);
+      throw error;
+    }
     return publicProject(project);
   },
   async fetch(id) {
@@ -344,16 +405,21 @@ const actions = {
   },
   async build(id) {
     const project = getProject(id);
-    if (!project.main) throw new Error("Add a .tex file to build this project.");
-    const result = await compileProject(project.root, project.main, project.engine);
+    const { root, main, engine } = project;
+    if (!main) throw new Error("Add a .tex file to build this project.");
+    const files = await listFiles(root, "", true);
+    const result = await compileProject(root, main, engine);
     if (result.ok) {
-      previews.set(id, { bytes: result.bytes, name: result.name });
+      previews.set(id, { bytes: result.bytes, name: result.name, main, engine, files });
     }
     return result;
   },
   async exportPdf(id) {
+    const project = getProject(id);
     const preview = previews.get(id);
-    if (!preview) throw new Error("Build the project before exporting.");
+    if (!currentPreview(project, preview, await listFiles(project.root, "", true))) {
+      throw new Error("Build the current document before exporting.");
+    }
     const result = await dialog.showSaveDialog(window, {
       title: "Save PDF", defaultPath: preview.name, filters: [{ name: "PDF", extensions: ["pdf"] }],
     });
@@ -484,7 +550,7 @@ else {
         try {
           return { ok: true, value: await handler(...args) };
         } catch (error) {
-          return { ok: false, error: error.message || "This operation could not finish." };
+          return { ok: false, error: error.message || "This operation could not finish.", code: error.code };
         }
       });
     }

@@ -1,5 +1,8 @@
 import { execFile } from "node:child_process";
+import { lstat } from "node:fs/promises";
+import path from "node:path";
 import { promisify } from "node:util";
+import { isSyncPath, withProjectWrite } from "./files.mjs";
 
 const run = promisify(execFile);
 
@@ -33,7 +36,7 @@ export function parseOverleafLink(input) {
   throw new Error("Use the project URL or the HTTPS address under Integrations → Git.");
 }
 
-async function git(cwd, args, authentication) {
+async function git(cwd, args, authentication, input) {
   const config = {
     "core.hooksPath": "/dev/null",
     "core.fsmonitor": "false",
@@ -66,18 +69,28 @@ async function git(cwd, args, authentication) {
     env[`GIT_CONFIG_VALUE_${index}`] = value;
   }
   try {
-    const { stdout } = await run("git", args, { cwd, env, maxBuffer: 4 * 1024 * 1024, timeout: 90_000 });
+    const child = run("git", args, { cwd, env, maxBuffer: 4 * 1024 * 1024, timeout: 90_000 });
+    if (input) {
+      child.child.stdin.on("error", () => {}); // Git reports failures via its exit code.
+      child.child.stdin.end(input);
+    }
+    const { stdout } = await child;
     return stdout;
   } catch (error) {
     if (error.code === "ENOENT") throw new Error("Install Git to connect an Overleaf project.");
-    if (error.killed || /resolve host|failed to connect|could not connect|network is unreachable/i.test(error.stderr)) {
-      throw new Error("Overleaf is unreachable. Your local files are available offline.");
+    if (authentication && (error.killed ||
+        /resolve host|failed to connect|could not connect|network is unreachable|connection (?:reset|timed out)|unexpected disconnect|early EOF/i.test(error.stderr))) {
+      throw Object.assign(new Error("Overleaf is unreachable. Your local files are available offline."), { code: "SYNC_RETRY" });
     }
-    if (/authentication failed|terminal prompts disabled|401|403|repository .*not found/i.test(error.stderr)) {
+    if (authentication && /authentication failed|terminal prompts disabled|returned error: (?:401|403|404)\b|repository .*not found/i.test(error.stderr)) {
       throw new Error("Overleaf denied access. Check the project’s Git access and your token.");
     }
     const message = error.stderr?.trim().split("\n").filter(line => !line.startsWith("hint:")).slice(-3).join("\n");
-    throw new Error(message || "Git could not finish this operation.");
+    const failure = new Error(message || "Git could not finish this operation.");
+    if (authentication && /returned error: (?:408|429|5\d\d)\b|\[rejected\].*\((?:fetch first|non-fast-forward)\)/i.test(error.stderr)) {
+      failure.code = "SYNC_RETRY";
+    }
+    throw failure;
   }
 }
 
@@ -95,10 +108,33 @@ export async function fetchOverleaf(root, connection, token) {
 }
 
 export async function integrateOverleaf(root, connection) {
+  return withProjectWrite(root, () => integrate(root, connection));
+}
+
+const fileNames = output => output.split("\0").filter(Boolean);
+
+function requirePublishableAdditions(names) {
+  if (names.some(name => !isSyncPath(name))) {
+    throw new Error("Local Git changes include hidden or generated files. Review the project in Git before syncing.");
+  }
+}
+
+async function integrate(root, connection) {
   const branch = (await git(root, ["symbolic-ref", "--short", "HEAD"])).trim();
   if (branch !== connection.branch) throw new Error(`Switch the project back to the ${connection.branch} branch to sync.`);
-  await git(root, ["add", "-A", "--", "."]);
-  if ((await git(root, ["status", "--porcelain=v1", "-z"])).length) {
+  requirePublishableAdditions(fileNames(await git(root, ["diff", "--cached", "--name-only", "--diff-filter=A", "--no-renames", "-z"])));
+  await git(root, ["add", "-u", "--", "."]);
+  const candidates = fileNames(await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])).filter(isSyncPath);
+  const regular = (await Promise.all(candidates.map(async name => {
+    const info = await lstat(path.join(root, name)).catch(error => {
+      if (error.code !== "ENOENT") throw error;
+    });
+    return info?.isFile() ? name : null;
+  }))).filter(Boolean);
+  if (regular.length) {
+    await git(root, ["--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"], undefined, regular.join("\0") + "\0");
+  }
+  if ((await git(root, ["diff", "--cached", "--name-only", "-z"])).length) {
     await git(root, ["commit", "-m", "Save edits from Quire"]);
   }
   const before = (await git(root, ["rev-parse", "HEAD"])).trim();
@@ -116,7 +152,10 @@ export async function integrateOverleaf(root, connection) {
 }
 
 export async function pushOverleaf(root, connection, token) {
-  await git(root, ["push", "--", connection.url, `HEAD:refs/heads/${connection.branch}`], {
+  const head = (await git(root, ["rev-parse", "HEAD"])).trim();
+  const additions = await git(root, ["log", "--format=", "--name-only", "--diff-filter=A", "--no-renames", "-z", `FETCH_HEAD..${head}`]);
+  requirePublishableAdditions(fileNames(additions));
+  await git(root, ["push", "--", connection.url, `${head}:refs/heads/${connection.branch}`], {
     url: connection.url, token,
   });
 }

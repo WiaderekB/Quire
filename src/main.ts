@@ -108,7 +108,9 @@ app.innerHTML = `
     <div class="status-slot">
       <button class="icon-button sidebar-toggle" id="toggle-sidebar" title="Toggle sidebar" aria-label="Toggle sidebar" aria-pressed="true">${icon("panelLeft")}</button>
       <button id="settings-collapsed" class="icon-button" title="Settings (${settingsShortcut})" aria-label="Settings" hidden>${icon("gear")}</button>
-      <span id="save-status" role="status"></span><span id="sync-status" role="status" hidden></span>
+      <span id="save-status" role="status"></span>
+      <button class="status-button" id="recover-save" type="button" hidden>Recover edits…</button>
+      <span id="sync-status" role="status" hidden></span>
     </div>
     <div class="status-slot status-details">
       <span id="cursor" class="cursor"></span>
@@ -171,15 +173,20 @@ let applying = false;
 let building = false;
 let switching = false;
 let switchingFile = false;
+let refreshing = false;
+let recovering = false;
 let currentBuildLog = "";
 let syncMessage = "";
 let syncError = false;
+let syncRetries = 0;
 let buildMessage = "";
 let buildError = false;
 let buildStale = false;
 let saveError = "";
 let savePending = false;
 let editCount = 0;
+let buildRevision = 0;
+const saveCancelled = Symbol("saveCancelled");
 let dialogAction: ((data: FormData) => Promise<void>) | undefined;
 let dialogBusy = false;
 let preferences: Preferences = {
@@ -198,11 +205,13 @@ const preview = new Preview(el("preview-scroll"), el("paper-stack"), (page, page
   count.textContent = pages ? `${page} / ${pages}` : "";
   count.title = pages ? `Page ${page} of ${pages}` : "";
   el("fit").textContent = zoom;
-  for (const id of ["zoom-out", "fit", "zoom-in", "export"]) el<HTMLButtonElement>(id).disabled = !pages;
+  for (const id of ["zoom-out", "fit", "zoom-in"]) el<HTMLButtonElement>(id).disabled = !pages;
+  renderExport();
 });
 
 function message(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
+  return typeof error === "object" && error && "message" in error && typeof error.message === "string"
+    ? error.message : String(error);
 }
 
 function notify(text: string, error = false) {
@@ -223,7 +232,9 @@ function notify(text: string, error = false) {
 
 function run(action: () => void | Promise<unknown>) {
   try {
-    void Promise.resolve(action()).catch(error => notify(message(error), true));
+    void Promise.resolve(action()).catch(error => {
+      if (error !== saveCancelled) notify(message(error), true);
+    });
   } catch (error) {
     notify(message(error), true);
   }
@@ -290,6 +301,8 @@ function renderStatus() {
     !workspace.project ? "" : saveError ? "Save failed" : savePending ? "Saving…" : "Saved locally",
     saveError ? "error" : savePending ? "working" : "good");
   el("save-status").title = saveError;
+  el("recover-save").hidden = !saveError;
+  el<HTMLButtonElement>("recover-save").disabled = switching || switchingFile || applying || recovering;
   const dirty = tabBar.querySelector<HTMLElement>(".active .tab-dirty");
   if (dirty) dirty.hidden = !savePending;
   setStatus("sync-status", syncError ? "circleAlert" : syncing ? "refresh" : "cloudCheck", syncMessage,
@@ -300,7 +313,7 @@ function renderStatus() {
   el<HTMLButtonElement>("build-status").disabled = !currentBuildLog;
   el<HTMLButtonElement>("build").disabled = !workspace.project?.main || building || applying;
   el<HTMLButtonElement>("new-file").disabled = !workspace.project || applying || switching || switchingFile;
-  el<HTMLButtonElement>("build-settings").disabled = !workspace.project || !workspace.files.some(file => /\.tex$/i.test(file.path));
+  el<HTMLButtonElement>("build-settings").disabled = building || !workspace.project || !workspace.files.some(file => /\.tex$/i.test(file.path));
   el<HTMLButtonElement>("find-button").disabled = !view;
   el<HTMLButtonElement>("insert-block").disabled = !view || !/\.(tex|ltx)$/i.test(activeFile?.path ?? "") || applying;
   const cloud = el<HTMLButtonElement>("cloud-button");
@@ -314,6 +327,13 @@ function renderStatus() {
   }
   cloud.disabled = (connected && !!syncingProject) || switching;
   cloud.classList.toggle("working", syncing);
+  renderExport();
+}
+
+function renderExport() {
+  const button = el<HTMLButtonElement>("export");
+  button.disabled = !preview.hasDocument || buildStale || building || buildError;
+  button.title = preview.hasDocument && (buildStale || buildError) ? "Compile before saving PDF" : "Save PDF";
 }
 
 function fileName(path: string) {
@@ -531,13 +551,21 @@ function edited(update: ViewUpdate) {
     renderOutline();
     clearTimeout(saveTimer);
     saveTimer = window.setTimeout(() => { void flush().catch(() => {}); }, 300);
-    if (preview.hasDocument && !building && !buildError) {
-      buildStale = true;
-      buildMessage = "Preview needs compilation";
-    }
+    invalidatePreview();
     renderStatus();
   }
   if (update.docChanged || update.selectionSet) renderCursor();
+}
+
+function invalidatePreview() {
+  buildRevision += 1;
+  if (preview.hasDocument) {
+    buildStale = true;
+    if (!building) {
+      buildError = false;
+      buildMessage = "Preview needs compilation";
+    }
+  }
 }
 
 async function flush() {
@@ -574,6 +602,39 @@ async function flush() {
   await save;
 }
 
+async function flushForNavigation() {
+  try {
+    await flush();
+  } catch (error) {
+    const { project } = workspace;
+    if (!project || !activeFile || !source || !view || recovering) throw error;
+    const file = activeFile;
+    const previous = source;
+    const readOnly = view.state.readOnly;
+    setReadOnly(view, true);
+    recovering = true;
+    renderStatus();
+    try {
+      if (!await api.recoverSource(project.id, file.path, view.state.sliceDoc(), message(error))) throw saveCancelled;
+      source = await api.read(project.id, file.path).catch(() => previous);
+      storedEditors.delete(tabKey(project.id, file.path));
+      view.destroy();
+      view = createEditor(editorHost, file.path, source.text, edited, preferences);
+      saveError = "";
+      savePending = false;
+      invalidatePreview();
+      queueCompile();
+      queueSync();
+      renderOutline();
+      renderCursor();
+    } finally {
+      recovering = false;
+      setReadOnly(view, readOnly);
+      renderStatus();
+    }
+  }
+}
+
 function editorPlaceholder(symbol: Icon, title: string, description: string, button?: HTMLButtonElement) {
   const empty = el("editor-empty");
   const mark = document.createElement("span");
@@ -598,7 +659,7 @@ function textButton(label: string, callback: () => void, kind = "secondary-butto
 }
 
 async function openFile(file?: ProjectFile, { reload = false, focus = true } = {}) {
-  if (switchingFile || (applying && !reload)) return;
+  if (switchingFile || recovering || (applying && !reload)) return;
   if (!reload && file && view && file.path === activeFile?.path) {
     if (focus && main.dataset.view === "preview") showView("split");
     if (focus) view.focus();
@@ -608,21 +669,11 @@ async function openFile(file?: ProjectFile, { reload = false, focus = true } = {
   switchingFile = true;
   setReadOnly(view, true);
   try {
-    await flush();
+    if (reload) await flush();
+    else await flushForNavigation();
     let loaded: Source | undefined;
     if (project && file?.editable) loaded = await api.read(project.id, file.path);
     if (reload && file?.path === activeFile?.path && loaded?.version === source?.version && view) return;
-    if (reload && view && file?.path === activeFile?.path && loaded?.version !== source?.version) {
-      if (preview.hasDocument) {
-        buildStale = true;
-        buildMessage = "Preview needs compilation";
-      }
-      if (project?.connection && !syncingProject && !syncError) {
-        syncMessage = "Changes to sync";
-        queueSync();
-      }
-      queueCompile();
-    }
     rememberEditor();
     view?.destroy();
     view = undefined;
@@ -682,9 +733,10 @@ async function loadWorkspace(next: Workspace, first = false) {
   document.title = next.project ? `${next.project.name} — Quire` : "Quire";
   syncMessage = next.project?.connection ? "Overleaf connected" : "";
   syncError = false;
-  buildStale = false;
+  syncRetries = 0;
+  buildStale = next.previewStale === true;
   buildError = false;
-  buildMessage = next.preview ? first ? "PDF up to date" : "Last compiled PDF" : "";
+  buildMessage = buildStale ? "Preview needs compilation" : next.preview ? "PDF up to date" : "";
   currentBuildLog = "";
   el("build-log").hidden = true;
   renderStatus();
@@ -693,7 +745,7 @@ async function loadWorkspace(next: Workspace, first = false) {
   const results = await Promise.allSettled([openFile(initial, { reload: true, focus: !first && !dialog.open }), showPdf(next.preview)]);
   for (const result of results) if (result.status === "rejected") notify(message(result.reason), true);
   if (next.project?.connection?.auto) queueSync(6000);
-  if (!next.preview) queueCompile();
+  if (!next.preview || buildStale) queueCompile();
 }
 
 async function showPdf(bytes?: Uint8Array, keepViewport = false) {
@@ -707,7 +759,7 @@ async function showPdf(bytes?: Uint8Array, keepViewport = false) {
 }
 
 async function changeProject(action: () => Promise<Workspace | null>) {
-  if (switching || switchingFile || applying || building) {
+  if (switching || switchingFile || applying || building || recovering) {
     throw new Error("Wait for the current project operation to finish.");
   }
   switching = true;
@@ -715,7 +767,7 @@ async function changeProject(action: () => Promise<Workspace | null>) {
   renderStatus();
   closeMenu();
   try {
-    await flush();
+    await flushForNavigation();
     const next = await action();
     if (next) await loadWorkspace(next);
   } finally {
@@ -730,25 +782,64 @@ function openFolder() {
 }
 
 function queueSync(delay = 4200) {
-  if (!workspace.project?.connection?.auto || syncError) return;
+  if (!syncError) scheduleSync(delay);
+}
+
+function scheduleSync(delay: number) {
+  if (!workspace.project?.connection?.auto) return;
   clearTimeout(autoSyncTimer);
   autoSyncTimer = window.setTimeout(() => { void sync(false); }, delay);
 }
 
+async function refreshProject(incoming = false) {
+  const { project, files } = workspace;
+  if (!project || refreshing) return;
+  refreshing = true;
+  try {
+    const fresh = await api.refresh(project.id);
+    if (workspace.project?.id !== project.id || switching || switchingFile || recovering || (!incoming && applying)) return;
+    const changed = fresh.files.length !== files.length || fresh.files.some((file, index) =>
+      file.path !== files[index].path || file.stamp !== files[index].stamp);
+    workspace = fresh;
+    const file = fresh.files.find(entry => entry.path === activeFile?.path);
+    tabs = tabs.filter(path => fresh.files.some(entry => entry.path === path) || (savePending && path === activeFile?.path));
+    if (incoming || project.main !== fresh.project?.main || (preview.hasDocument ? fresh.previewStale : changed)) {
+      invalidatePreview();
+      queueCompile();
+    }
+    if (changed && !incoming) queueSync();
+    if (!savePending) {
+      const next = file ?? fresh.files.find(entry => entry.path === fresh.project?.main) ?? fresh.files.find(entry => entry.editable);
+      if (activeFile || next) await openFile(next, { reload: true, focus: view?.hasFocus === true });
+    }
+    persistTabs();
+    renderFiles();
+    renderTabs();
+    renderStatus();
+  } finally {
+    refreshing = false;
+  }
+}
+
 async function sync(manual: boolean) {
   const project = workspace.project;
-  if (!project?.connection || syncingProject || switching || switchingFile || building || (!manual && dialog.open)) return;
+  if (!project?.connection || syncingProject || (!manual && !project.connection.auto)) return;
+  if (switching || switchingFile || building || refreshing || recovering || (!manual && dialog.open)) {
+    if (!manual) scheduleSync(1000);
+    return;
+  }
   clearTimeout(autoSyncTimer);
   syncingProject = project.id;
   syncError = false;
   syncMessage = "Syncing with Overleaf…";
+  let nextSync: number | undefined;
   renderStatus();
   try {
     await api.fetch(project.id);
     if (workspace.project?.id !== project.id) return;
-    if (building || switching || switchingFile || dialogBusy) {
+    if (building || switching || switchingFile || dialogBusy || refreshing || recovering) {
       syncMessage = "Overleaf connected";
-      queueSync();
+      nextSync = 1000;
       return;
     }
     applying = true;
@@ -760,26 +851,14 @@ async function sync(manual: boolean) {
       await flush();
       stagedRevision = editCount;
       integrated = await api.integrate(project.id);
-      if (integrated.changed) {
-        const hadFocus = view?.hasFocus;
-        const fresh = await api.refresh(project.id);
-        const previous = activeFile?.path;
-        workspace = fresh;
-        tabs = tabs.filter(path => fresh.files.some(file => file.path === path));
-        const file = fresh.files.find(entry => entry.path === previous) ?? fresh.files.find(entry => entry.path === fresh.project?.main);
-        await openFile(file, { reload: true, focus: hadFocus === true });
-        if (preview.hasDocument) {
-          buildMessage = "Preview needs compilation";
-          buildStale = true;
-        }
-        queueCompile();
-      }
+      if (integrated.changed) await refreshProject(true);
     } finally {
       applying = false;
       setReadOnly(view, false);
       renderStatus();
     }
     if (integrated.conflicts.length) {
+      syncRetries = 0;
       syncError = true;
       syncMessage = "Overleaf conflict";
       notify(`Local and Overleaf edits overlap in ${integrated.conflicts.join(", ")}. Both versions are still available.`, true);
@@ -789,15 +868,24 @@ async function sync(manual: boolean) {
     if (workspace.project?.id !== project.id) return;
     const hasNewEdits = stagedRevision !== editCount || savePending;
     syncMessage = hasNewEdits ? "Changes to sync" : "Synced with Overleaf";
-    if (hasNewEdits) queueSync();
+    syncRetries = 0;
+    nextSync = hasNewEdits ? 4200 : 60_000;
   } catch (error) {
     if (workspace.project?.id !== project.id) return;
     syncError = true;
     syncMessage = message(error);
+    if (typeof error === "object" && error && "code" in error && error.code === "SYNC_RETRY") {
+      nextSync = 4000 * 2 ** Math.min(syncRetries++, 4);
+      nextSync = Math.min(nextSync, 60_000);
+    } else {
+      syncRetries = 0;
+      if (saveError) nextSync = 60_000;
+    }
     if (manual) notify(syncMessage, true);
   } finally {
     syncingProject = undefined;
     if (workspace.project?.id !== project.id) queueSync();
+    else if (nextSync !== undefined) scheduleSync(nextSync);
     renderStatus();
   }
 }
@@ -806,20 +894,19 @@ function queueCompile(delay = 950) {
   clearTimeout(autoCompileTimer);
   if (!preferences.autoCompile || !workspace.project?.main) return;
   autoCompileTimer = window.setTimeout(() => {
-    if (building || switching || switchingFile || applying || dialog.open || quick.open) queueCompile(500);
+    if (building || switching || switchingFile || applying || refreshing || recovering || dialog.open || quick.open) queueCompile(500);
     else if (!saveError) void build(true);
   }, delay);
 }
 
 async function build(automatic = false) {
   const project = workspace.project;
-  if (!project?.main || building || switching || switchingFile || applying) return;
+  if (!project?.main || building || switching || switchingFile || applying || refreshing || recovering) return;
   clearTimeout(autoCompileTimer);
   building = true;
   buildError = false;
-  buildStale = false;
   buildMessage = "Compiling…";
-  const revision = editCount;
+  const revision = buildRevision;
   renderStatus();
   try {
     await flush();
@@ -829,7 +916,7 @@ async function build(automatic = false) {
     if (!automatic && main.dataset.view === "editor" && !focusRestore) showView("split");
     if (result.ok) {
       await showPdf(result.bytes, true);
-      buildStale = editCount !== revision;
+      buildStale = buildRevision !== revision;
       buildMessage = buildStale ? "Preview needs compilation" : "PDF up to date";
       el("build-log").hidden = true;
     } else {
@@ -847,7 +934,7 @@ async function build(automatic = false) {
   } finally {
     building = false;
     renderStatus();
-    if (editCount !== revision) queueCompile();
+    if (buildRevision !== revision) queueCompile();
   }
 }
 
@@ -1263,7 +1350,7 @@ function openInsert() {
       const start = text.indexOf("\\begin{document}");
       const end = text.lastIndexOf("\\end{document}");
       const selection = target.state.selection.main;
-      const insert = "\n" + latex + "\n";
+      const insert = target.state.toText(["", ...latex.split("\n"), ""].join(target.state.lineBreak));
       if (start >= 0 && end > start && (selection.from < start + "\\begin{document}".length || selection.to > end)) {
         target.dispatch({
           changes: { from: end, insert },
@@ -1277,16 +1364,17 @@ function openInsert() {
 
 function newFile() {
   const project = workspace.project;
-  if (!project || applying || switching) return;
+  if (!project || applying || switching || recovering) return;
   showDialog({
     title: "New file", symbol: "fileCode", label: "Create file", description: "Use a slash to put the file in a folder.",
     fields: [field("File name", "name", { placeholder: "sections/results.tex", required: true, spellcheck: false })],
     submit: async data => {
       if (applying) throw new Error("Wait for Overleaf sync to finish.");
-      await flush();
+      await flushForNavigation();
       const relative = value(data, "name");
       workspace = await api.createFile(project.id, relative);
       await openFile(workspace.files.find(file => file.path === relative), { focus: false });
+      if (view && main.dataset.view === "preview") showView("split");
       queueSync();
     },
   });
@@ -1319,6 +1407,7 @@ function connectionSettings() {
     submit: async data => {
       workspace.project = await api.configureConnection(project.id, value(data, "token"), data.has("auto"));
       syncError = false;
+      syncRetries = 0;
       syncMessage = "Overleaf connected";
       renderStatus();
       clearTimeout(autoSyncTimer);
@@ -1329,7 +1418,7 @@ function connectionSettings() {
 
 function buildSettings() {
   const project = workspace.project;
-  if (!project) return;
+  if (!project || building) return;
   const candidates = workspace.files.filter(file => file.editable && /\.tex$/i.test(file.path));
   showDialog({
     title: "Compiler settings", symbol: "settings", label: "Save settings", description: "",
@@ -1338,7 +1427,12 @@ function buildSettings() {
       select("LaTeX engine", "engine", [["pdflatex", "pdfLaTeX"], ["xelatex", "XeLaTeX"], ["lualatex", "LuaLaTeX"]], project.engine),
     ],
     submit: async data => {
-      workspace.project = await api.configureBuild(project.id, value(data, "main"), value(data, "engine") as Engine);
+      const main = value(data, "main");
+      const engine = value(data, "engine") as Engine;
+      if (project.main === main && project.engine === engine) return;
+      workspace.project = await api.configureBuild(project.id, main, engine);
+      invalidatePreview();
+      queueCompile();
       renderFiles();
       renderStatus();
     },
@@ -1357,6 +1451,7 @@ form.addEventListener("submit", event => {
     if (secret) secret.value = "";
     view?.focus();
   }).catch(error => {
+    if (error === saveCancelled) return;
     el("dialog-error").textContent = message(error);
     el("dialog-error").hidden = false;
   }).finally(() => {
@@ -1410,7 +1505,16 @@ el("settings-collapsed").addEventListener("click", openSettings);
 el("zoom-out").addEventListener("click", () => preview.zoom(-0.1));
 el("zoom-in").addEventListener("click", () => preview.zoom(0.1));
 el("fit").addEventListener("click", () => preview.fit());
-el("export").addEventListener("click", () => run(() => api.exportPdf(workspace.project!.id)));
+function exportPdf() {
+  if (workspace.project && !el<HTMLButtonElement>("export").disabled) return api.exportPdf(workspace.project.id);
+}
+
+el("export").addEventListener("click", () => run(exportPdf));
+el("recover-save").addEventListener("click", () => run(async () => {
+  await flushForNavigation();
+  await refreshProject();
+  view?.focus();
+}));
 el("build-status").addEventListener("click", () => {
   if (!currentBuildLog) return;
   if (main.dataset.view === "editor") showView("split");
@@ -1446,15 +1550,17 @@ divider.addEventListener("keydown", event => {
 });
 
 api.onPrepareClose(() => {
+  if (recovering) { void api.close(false); return; }
+  const readOnly = view?.state.readOnly ?? false;
   setReadOnly(view, true);
-  void flush().then(() => api.close(true)).catch(error => {
-    setReadOnly(view, false);
-    notify(message(error), true);
+  void flushForNavigation().then(() => api.close(true)).catch(error => {
+    setReadOnly(view, readOnly);
+    if (error !== saveCancelled) notify(message(error), true);
     void api.close(false);
   });
 });
 api.onCommand(command => {
-  if (dialog.open || quick.open) return;
+  if (dialog.open || quick.open || recovering) return;
   if (command === "new") newProject();
   if (command === "new-file") newFile();
   if (command === "open") run(openFolder);
@@ -1475,19 +1581,16 @@ api.onCommand(command => {
   if (command === "pdf-view") showView("preview");
   if (command === "toggle-sidebar") showSidebar(main.classList.contains("sidebar-hidden"));
   if (command === "pdf-fit") preview.fit();
-  if (command === "export" && preview.hasDocument && workspace.project) run(() => api.exportPdf(workspace.project!.id));
+  if (command === "export") run(exportPdf);
   if (command === "sync") void sync(true);
 });
 
-window.setInterval(() => {
-  if (workspace.project?.connection?.auto && (!syncError || /unreachable|rejected/i.test(syncMessage))) void sync(false);
-}, 60_000);
 window.addEventListener("online", () => {
-  if (workspace.project?.connection?.auto && syncError && /unreachable/i.test(syncMessage)) void sync(false);
+  if (syncRetries) scheduleSync(0);
 });
 window.addEventListener("focus", () => {
-  if (activeFile?.editable && !savePending && !switching && !switchingFile && !applying && !dialog.open && !quick.open) {
-    run(() => openFile(activeFile, { reload: true, focus: view?.hasFocus === true }));
+  if (!switching && !switchingFile && !applying && !recovering && !dialog.open && !quick.open) {
+    run(refreshProject);
   }
 });
 showSidebar(localStorage.getItem("sidebar") !== "closed");

@@ -19,7 +19,6 @@ const response = value => ({
 
 function makeServer(root, write) {
   const server = new McpServer({ name: "quire", version: manifest.version });
-  let edits = Promise.resolve();
   async function sourcePath(relative) {
     if (!isVisibleSource(relative)) throw new Error("Choose a visible LaTeX project source file.");
     return projectPath(root, relative, { editable: true });
@@ -63,21 +62,17 @@ function makeServer(root, write) {
         newText: z.string().max(maxExcerpt),
       }),
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    }, ({ path: relative, version, oldText, newText }) => {
-      const operation = edits.then(async () => {
-        const file = await sourcePath(relative);
-        const current = await readSource(file);
-        if (current.version !== version) throw new Error("This file changed since it was read. Read it again to get the latest version.");
-        const start = current.text.indexOf(oldText);
-        if (start === -1 || current.text.indexOf(oldText, start + 1) !== -1) {
-          throw new Error("The old text must match exactly once. Include enough surrounding text to identify it.");
-        }
-        const next = current.text.slice(0, start) + newText + current.text.slice(start + oldText.length);
-        const written = await saveSource(file, next, version);
-        return response({ path: relative, version: written });
-      });
-      edits = operation.catch(() => {});
-      return operation;
+    }, async ({ path: relative, version, oldText, newText }) => {
+      const file = await sourcePath(relative);
+      const current = await readSource(file);
+      if (current.version !== version) throw new Error("This file changed since it was read. Read it again to get the latest version.");
+      const start = current.text.indexOf(oldText);
+      if (start === -1 || current.text.indexOf(oldText, start + 1) !== -1) {
+        throw new Error("The old text must match exactly once. Include enough surrounding text to identify it.");
+      }
+      const next = current.text.slice(0, start) + newText + current.text.slice(start + oldText.length);
+      const written = await saveSource(file, next, version, root);
+      return response({ path: relative, version: written });
     });
   }
 

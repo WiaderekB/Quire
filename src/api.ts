@@ -9,8 +9,8 @@ export type Project = {
   engine: Engine;
   connection: { url: string; web: string; auto: boolean } | null;
 };
-export type ProjectFile = { path: string; editable: boolean };
-export type Workspace = { project: Project | null; files: ProjectFile[]; recent: Project[]; preview?: Uint8Array };
+export type ProjectFile = { path: string; editable: boolean; stamp: string };
+export type Workspace = { project: Project | null; files: ProjectFile[]; recent: Project[]; preview?: Uint8Array; previewStale?: boolean };
 export type Source = { text: string; version: string };
 export type Appearance = "system" | "light" | "dark";
 export type Preferences = {
@@ -42,6 +42,7 @@ export interface QuireApi {
   refresh(id: string): Promise<Workspace>;
   read(id: string, relative: string): Promise<Source>;
   save(id: string, relative: string, contents: string, version: string): Promise<string>;
+  recoverSource(id: string, relative: string, contents: string, reason: string): Promise<boolean>;
   createFile(id: string, relative: string): Promise<Workspace>;
   configureBuild(id: string, relative: string, engine: Engine): Promise<Project>;
   fetch(id: string): Promise<void>;
