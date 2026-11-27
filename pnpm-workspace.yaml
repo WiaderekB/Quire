@@ -4,3 +4,6 @@ allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
   - vite@8.4.0
+overrides:
+  "@electron/universal>minimatch": 11.0.1
+  "app-builder-lib>minimatch": 11.0.1
